@@ -298,6 +298,7 @@ func Run() error {
 			a.notePlayed()
 			a.keepSession()
 			a.reportConnect()
+			a.redraw()
 		}
 		a.played, a.playedFrom = loadPlayed()
 		a.volume = a.settings.Volume

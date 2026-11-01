@@ -74,8 +74,12 @@ type Player struct {
 	repeat  RepeatMode
 	volume  float64
 
-	// A radio goes on with the tracks its feed gives, as the queue nears
-	// its end, for as long as nothing else is played.
+	repeatPending bool
+	repeatBefore  RepeatMode
+	repeatGen     int
+
+	// A radio goes on with the tracks its feed gives, as the queue nears its end,
+	// for as long as nothing else is played.
 	radio    string
 	feed     func(got func([]spotify.Track))
 	radioGen int  // counts radios, to drop what an old one gives
@@ -500,28 +504,46 @@ func (p *Player) ToggleShuffle() {
 		return
 	}
 	p.shuffle = !p.shuffle
-	if len(p.order) == 0 {
-		return
-	}
-	cur := p.order[max(p.at, 0)]
-	if p.shuffle {
-		p.shuffleOrder(cur)
-		p.at = 0
-	} else {
-		for i := range p.order {
-			p.order[i] = i
+	if len(p.order) > 0 {
+		cur := p.order[max(p.at, 0)]
+		if p.shuffle {
+			p.shuffleOrder(cur)
+			p.at = 0
+		} else {
+			for i := range p.order {
+				p.order[i] = i
+			}
+			p.at = cur
 		}
-		p.at = cur
 	}
+	p.sync()
 }
 
 func (p *Player) CycleRepeat() {
 	mode := (p.repeat + 1) % 3
 	if p.control("repeat", mode) {
+		p.repeatBefore = p.repeat
+		p.repeat = mode
+		p.repeatPending = true
+		p.repeatGen++
+		gen := p.repeatGen
+		p.sync()
+		time.AfterFunc(2*time.Second, func() {
+			p.post(func() {
+				if gen != p.repeatGen || !p.repeatPending {
+					return
+				}
+				p.repeat = p.repeatBefore
+				p.repeatPending = false
+				p.sync()
+			})
+		})
 		return
 	}
 	p.repeat = mode
+	p.sync()
 }
+
 
 // Current returns the track playing or loading, or nil.
 func (p *Player) Current() *spotify.Track { return p.track }
@@ -665,10 +687,15 @@ const seekGap = 30 * time.Millisecond
 // cutting from one sound to the other with a click.
 func (p *Player) Seek(t time.Duration) {
 	if p.control("seek", t) {
+		p.seeking, p.seekTo = true, t
+		p.sync()
 		return
 	}
 	if p.out == nil {
 		p.pending = t
+		p.seekTo = t
+		p.seeking = true
+		p.sync()
 		return
 	}
 	out := p.out
@@ -683,6 +710,7 @@ func (p *Player) Seek(t time.Duration) {
 	gen := p.seekGen
 	p.seeking, p.seekTo = true, t
 	out.Pause()
+	p.sync()
 	time.AfterFunc(seekGap, func() {
 		p.post(func() {
 			if gen != p.seekGen || p.out != out {
@@ -696,7 +724,6 @@ func (p *Player) Seek(t time.Duration) {
 			p.sync()
 		})
 	})
-	p.sync()
 }
 
 func (p *Player) SetVolume(v float64) {
@@ -706,7 +733,6 @@ func (p *Player) SetVolume(v float64) {
 	p.volume = v
 	p.applyGain()
 }
-
 // applyGain sets the volume of what plays: the listener's, which the ear
 // hears in powers.
 func (p *Player) applyGain() {
@@ -715,10 +741,10 @@ func (p *Player) applyGain() {
 
 func (p *Player) Position() time.Duration {
 	switch {
-	case p.out == nil:
-		return p.pending
 	case p.seeking:
 		return p.seekTo
+	case p.out == nil:
+		return p.pending
 	}
 	return p.out.Position()
 }
@@ -879,6 +905,7 @@ func (p *Player) loadSkipping(at, skipped int, play bool, from time.Duration) {
 	gen, t := p.cue(at, play, from)
 	p.loading, p.skipped = true, skipped
 	p.updateIdle()
+	p.sync()
 	resolveMedia := resolve
 	if m := p.takeAhead(t.ID); m != nil {
 		resolveMedia = func(string) (*spotify.Media, error) { return m, nil }
@@ -1092,6 +1119,7 @@ func (p *Player) cue(at int, play bool, from time.Duration) (int, spotify.Track)
 	p.track = &t
 	p.loading, p.playing, p.err = false, play, ""
 	p.media = nil
+	p.seeking, p.seekTo = false, 0
 	p.awaiting, p.waiting = false, false
 	p.lyrics, p.lyricsLoaded = nil, false
 	p.pending = from
@@ -1104,8 +1132,7 @@ func (p *Player) cue(at int, play bool, from time.Duration) (int, spotify.Track)
 		if err == nil {
 			p.post(func() {
 				if gen == p.gen {
-					// The track as it is now: Connect may have named its
-					// artist since.
+					// The track as it is now: Connect may have named its artist since.
 					p.cover = cover
 					p.announce(p.track, cover)
 				}

@@ -36,14 +36,21 @@ func (p *Player) ConnectOptions(options spotify.ConnectOptions) {
 		p.shuffle = *options.Shuffle
 	}
 	if options.RepeatContext != nil && options.RepeatTrack != nil {
-		p.repeat = RepeatOff
+		mode := RepeatOff
 		if *options.RepeatContext {
-			p.repeat = RepeatAll
+			mode = RepeatAll
 		}
 		if *options.RepeatTrack {
-			p.repeat = RepeatOne
+			mode = RepeatOne
+		}
+		if p.repeatPending && mode == p.repeat {
+			p.repeatPending = false
+			p.repeatGen++
+		} else if !p.repeatPending {
+			p.repeat = mode
 		}
 	}
+	p.sync()
 }
 
 func (p *Player) control(action string, value any) bool {

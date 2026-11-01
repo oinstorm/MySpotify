@@ -118,6 +118,57 @@ func TestSeekTwicePlaysOn(t *testing.T) {
 	}
 }
 
+// Repeat mode survives moving to another track and updates the player immediately.
+func TestRepeatSurvivesTrackChange(t *testing.T) {
+	p := New(func(func()) {})
+	p.Cue([]spotify.Track{{ID: "one"}, {ID: "two"}})
+	p.CycleRepeat()
+	if p.Repeat() != RepeatAll {
+		t.Fatalf("repeat = %v, want all", p.Repeat())
+	}
+	p.CycleRepeat()
+	if p.Repeat() != RepeatOne {
+		t.Fatalf("repeat = %v, want one", p.Repeat())
+	}
+	p.Next()
+	if p.Repeat() != RepeatOne || p.Current().ID != "two" {
+		t.Fatalf("after next: repeat = %v, current = %v", p.Repeat(), p.Current().ID)
+	}
+}
+
+// A Connect repeat change remains visible until the matching remote state arrives.
+func TestConnectRepeatChangeWaitsForConfirmation(t *testing.T) {
+	p := New(func(func()) {})
+	actions := 0
+	p.Control = func(action string, value any) bool {
+		if action == "repeat" {
+			actions++
+			return true
+		}
+		return false
+	}
+	p.CycleRepeat()
+	if actions != 1 || p.Repeat() != RepeatAll {
+		t.Fatalf("repeat = %v, actions = %d", p.Repeat(), actions)
+	}
+	p.ConnectOptions(spotify.ConnectOptions{RepeatContext: boolPtr(true), RepeatTrack: boolPtr(false)})
+	if p.Repeat() != RepeatAll {
+		t.Fatalf("confirmed repeat = %v", p.Repeat())
+	}
+}
+
+func boolPtr(v bool) *bool { return &v }
+
+// A seek with no output keeps the requested position until media opens.
+func TestSeekBeforeOutputKeepsPreview(t *testing.T) {
+	p := New(func(func()) {})
+	p.Cue([]spotify.Track{{ID: "one", Duration: 180000}})
+	p.Seek(42 * time.Second)
+	if p.Position() != 42*time.Second {
+		t.Fatalf("position = %v, want 42s", p.Position())
+	}
+}
+
 // A radio asks for more as its queue nears its end, and adds what is not
 // in it already.
 func TestRadioRefills(t *testing.T) {
