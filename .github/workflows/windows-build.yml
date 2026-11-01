@@ -36,12 +36,16 @@ jobs:
         run: go vet ./...
       - name: Spotify tests
         run: go test -v ./internal/spotify
-      - name: App tests
-        run: go test -v ./internal/app
+      - name: App update tests
+        run: go test -v ./internal/app -run "^(TestUpdate|TestAutoUpdateSetting|TestNoteLines)"
+      - name: App remaining tests
+        run: go test -v ./internal/app -run "^(TestAccount|TestArtist|TestArtwork|TestBackdrop|TestBrowse|TestCache|TestConnect|TestCover|TestCovered|TestCovers|TestScroll|TestShort|TestArt|TestPlay|TestSigned|TestBack|TestHome|TestLibrary|TestLike|TestLog|TestNotch|TestNow|TestQueue|TestAdd|TestRemove|TestNo|TestCreate|TestRename|TestDelete|TestCancel|TestSave|TestRadio|TestPlayed|TestRecent|TestScrub|TestSeal|TestSession|TestPodcast|TestSignIn|TestSpace|TestTrack|TestLong|TestSong|TestEpisodes|TestTray|TestClock|TestMV|TestSkeleton|TestSongMenu)"
       - name: Player tests
         run: go test -v ./internal/player
       - name: Other Go tests
         run: go test -v ./internal/lyrics
+      - name: Player page tests
+        run: node internal/player/web/player.test.cjs
       - name: Build
         shell: pwsh
         run: |
