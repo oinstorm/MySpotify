@@ -69,6 +69,9 @@ func (p *Player) ConnectOptions(options spotify.ConnectOptions) {
 	}
 	p.sync()
 }
+func (p *Player) control(action string, value any) bool {
+	return p.Control != nil && p.Control(action, value)
+}
 
 func (p *Player) ApplyConnect(track spotify.Track, position time.Duration, paused bool) {
 	control := p.Control
