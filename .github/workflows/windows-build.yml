@@ -34,6 +34,8 @@ jobs:
         run: Get-ChildItem -Recurse -Filter *.go | ForEach-Object { gofmt -w $_.FullName }
       - name: Vet Spotify
         run: go vet ./internal/spotify
+      - name: Compile Player
+        run: go test -run '^$' ./internal/player
       - name: Vet Player
         run: go vet ./internal/player
       - name: Vet App
