@@ -3,7 +3,6 @@ package app
 import (
 	"io"
 	"log"
-	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -178,6 +177,10 @@ type app struct {
 	cacheUsed   int64   // the bytes the cache of tracks takes, -1 until measured
 	upd         updates // a newer version, looked for and installed
 
+	proxyDraftReady   bool
+	proxyDraftMode   string
+	proxyDraftAddress string
+	proxyMessage      string
 	restored     bool   // playback picked up where it was left
 	accountGen   int    // signed in or out how many times: a sign-in asked before is no one's
 	savedSession string // the session as last kept
@@ -253,17 +256,22 @@ func Run() error {
 		spotify.LoadOps()
 	}
 	log.Printf("start, pid %d", os.Getpid())
-	// MyGo's updater asks GitHub with http.DefaultClient: through the
-	// system's proxy, as the requests to Spotify go.
-	if t, ok := http.DefaultTransport.(*http.Transport); ok {
-		t.Proxy = spotify.SystemProxy
-	}
-	os.Setenv("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", strings.TrimSpace(os.Getenv("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS")+" --autoplay-policy=no-user-gesture-required --in-process-gpu --disable-gpu"))
 	// What decoding a page of covers takes goes back to the system after,
 	// rather than staying in the heap (20 MB).
 	if os.Getenv("GOMEMLIMIT") == "" {
 		debug.SetMemoryLimit(64 << 20)
 	}
+	proxyConfig := loadSettings().proxyConfig()
+	if err := spotify.ConfigureProxy(proxyConfig); err != nil {
+		log.Printf("proxy: %v; using system proxy", err)
+		proxyConfig = spotify.ProxyConfig{Mode: spotify.ProxySystem}
+		_ = spotify.ConfigureProxy(proxyConfig)
+	}
+	if err := configureWebViewProxy(proxyConfig); err != nil {
+		log.Printf("webview proxy: %v; using system proxy", err)
+		_ = configureWebViewProxy(spotify.ProxyConfig{Mode: spotify.ProxySystem})
+	}
+	os.Setenv("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", strings.TrimSpace(os.Getenv("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS")+" --autoplay-policy=no-user-gesture-required --in-process-gpu --disable-gpu"))
 	mygo.App.WhenReady(func() {
 		a.settings = loadSettings()
 		a.settings.applyAppearance()

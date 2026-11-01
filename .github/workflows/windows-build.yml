@@ -1,0 +1,72 @@
+name: Windows build
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-build:
+    runs-on: windows-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Tool versions
+        shell: pwsh
+        run: |
+          go version
+          node --version
+      - name: Format check
+        shell: pwsh
+        run: |
+          $files = gofmt -l .
+          if ($files) { $files; exit 1 }
+      - name: Vet
+        run: go vet ./...
+      - name: Go tests
+        run: go test ./...
+      - name: Player page tests
+        run: node internal/player/web/player.test.cjs
+      - name: Build
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force build-test | Out-Null
+          $env:CGO_ENABLED = "0"
+          go build -trimpath -ldflags="-H windowsgui -s -w" -o build-test/MySpotify.exe .
+      - name: Package
+        shell: pwsh
+        run: |
+          Copy-Item LICENSE, README.md -Destination build-test
+          Copy-Item licenses -Destination build-test -Recurse
+          @"
+          MySpotify Windows proxy test build
+
+          This is an unsigned CI build. It is not an official release and does not include signed auto-update metadata.
+          Install the Microsoft WebView2 Runtime before launching.
+          Configure the HTTP proxy in Settings, then fully exit MySpotify from the tray and reopen it.
+          Supported proxy form: http://host:port. SOCKS5, PAC and proxy authentication are not supported in this build.
+          "@ | Set-Content build-test/README-proxy.txt
+          $name = "MySpotify-windows-amd64-${{ github.sha }}.zip"
+          Compress-Archive -Path build-test/* -DestinationPath $name
+          (Get-FileHash $name -Algorithm SHA256).Hash | Set-Content "$name.sha256"
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: MySpotify-windows-amd64-${{ github.sha }}
+          path: |
+            MySpotify-windows-amd64-${{ github.sha }}.zip
+            MySpotify-windows-amd64-${{ github.sha }}.zip.sha256
+          retention-days: 14

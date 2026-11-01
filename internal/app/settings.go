@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 
 	"github.com/egoist/mygo"
+
+	"vinyl/internal/spotify"
 )
 
 // settings are the listener's choices, kept in settings.json in the user
@@ -50,6 +52,11 @@ type settings struct {
 	// CacheMB is how many megabytes the parts of tracks kept on disk may
 	// take; 0 keeps none.
 	CacheMB int `json:"cacheMB"`
+
+	// ProxyMode is system, direct, or manual. Empty means system for old settings.
+	ProxyMode string `json:"proxyMode,omitempty"`
+	// ProxyAddress is an unauthenticated HTTP proxy URL, such as http://127.0.0.1:7890.
+	ProxyAddress string `json:"proxyAddress,omitempty"`
 
 	// AutoUpdate looks for a new version on opening and twice a day.
 	AutoUpdate bool `json:"autoUpdate"`
@@ -108,4 +115,12 @@ func (s settings) applyAppearance() {
 	default:
 		mygo.Theme.SetSource(mygo.ThemeSystem)
 	}
+}
+
+func (s settings) proxyConfig() spotify.ProxyConfig {
+	mode := spotify.ProxyMode(s.ProxyMode)
+	if mode == "" {
+		mode = spotify.ProxySystem
+	}
+	return spotify.ProxyConfig{Mode: mode, Address: s.ProxyAddress}
 }
