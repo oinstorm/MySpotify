@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/egoist/mygo/ui"
@@ -29,6 +30,9 @@ type connectState struct {
 	decorating                   bool
 	timer                        *time.Timer
 	jobs                         chan func() error
+	coalesced                    map[string]func() error
+	coalescedQueued              map[string]bool
+	jobsMu                       sync.Mutex
 	done                         chan struct{}
 }
 
@@ -59,7 +63,7 @@ func (a *app) startConnect() {
 	}
 	hostname, _ := os.Hostname()
 	sum := sha256.Sum256([]byte("Vinyl/" + a.profile.UserID + "/" + hostname))
-	state := &connectState{user: a.profile.UserID, jobs: make(chan func() error, 32), done: make(chan struct{})}
+	state := &connectState{user: a.profile.UserID, jobs: make(chan func() error, 32), coalesced: map[string]func() error{}, coalescedQueued: map[string]bool{}, done: make(chan struct{})}
 	state.client = spotify.NewConnect(hex.EncodeToString(sum[:20]), appName+" · "+hostname, func(event spotify.ConnectEvent) {
 		a.post(func() {
 			if a.connect == state {
@@ -97,12 +101,52 @@ func (a *app) startConnect() {
 }
 
 func (a *app) connectJob(job func() error) {
-	if a.connect == nil {
+	a.connectJobKey("", job)
+}
+
+func (a *app) connectJobKey(key string, job func() error) {
+	state := a.connect
+	if state == nil {
 		return
 	}
+	if key == "" {
+		select {
+		case state.jobs <- job:
+		default:
+			a.toast = "Connect 操作正在排队，请稍后再试"
+		}
+		return
+	}
+	state.jobsMu.Lock()
+	if state.coalesced == nil {
+		state.coalesced = map[string]func() error{}
+	}
+	if state.coalescedQueued == nil {
+		state.coalescedQueued = map[string]bool{}
+	}
+	state.coalesced[key] = job
+	if state.coalescedQueued[key] {
+		state.jobsMu.Unlock()
+		return
+	}
+	state.coalescedQueued[key] = true
+	state.jobsMu.Unlock()
 	select {
-	case a.connect.jobs <- job:
+	case state.jobs <- func() error {
+		state.jobsMu.Lock()
+		job := state.coalesced[key]
+		delete(state.coalesced, key)
+		state.coalescedQueued[key] = false
+		state.jobsMu.Unlock()
+		if job == nil {
+			return nil
+		}
+		return job()
+	}:
 	default:
+		state.jobsMu.Lock()
+		state.coalescedQueued[key] = false
+		state.jobsMu.Unlock()
 		a.toast = "Connect 操作正在排队，请稍后再试"
 	}
 }
@@ -119,6 +163,7 @@ func (a *app) connectTick(state *connectState) {
 	})
 }
 
+
 func (a *app) reportConnect() {
 	state := a.connect
 	if state == nil || state.applying || !state.receiver || state.ref == nil || a.pl.IsRemote() || a.pl.Loading() {
@@ -132,7 +177,7 @@ func (a *app) reportConnect() {
 	state.ref.Paused = paused
 	ref := map[string]any{"state_machine_id": state.machine.ID, "state_id": state.machine.States[index].ID, "paused": paused}
 	pos, duration := a.pl.Position().Milliseconds(), a.pl.Duration().Milliseconds()
-	a.connectJob(func() error { return state.client.Report(ref, pos, duration, paused) })
+	a.connectJobKey("report", func() error { return state.client.Report(ref, pos, duration, paused) })
 }
 
 func (a *app) connectEvent(event spotify.ConnectEvent) {
@@ -142,8 +187,6 @@ func (a *app) connectEvent(event spotify.ConnectEvent) {
 		log.Printf("connect: %s: %v", event.Kind, event.Err)
 	}
 	switch event.Kind {
-	// Ready is logged too: without it, a log with no Connect in it could
-	// not tell one that never started from one that never failed.
 	case "observer_ready":
 		log.Printf("connect: observer ready")
 		state.observer = true
@@ -365,6 +408,12 @@ func (a *app) connectControl(action string, value any) bool {
 	if state == nil || state.applying {
 		return false
 	}
+	// A background Connect session must not intercept local playback. It
+	// becomes authoritative only after a remote state is selected or the
+	// player is mirroring another device.
+	if state.ref == nil && !a.pl.IsRemote() {
+		return false
+	}
 	if !state.observer || !state.receiver {
 		if a.pl.IsRemote() || state.ref != nil {
 			a.toast = "Connect 正在重连，请稍后"
@@ -404,6 +453,8 @@ func (a *app) connectControl(action string, value any) bool {
 		}
 		action = "seek_to"
 		extra["value"] = max(0, value.(time.Duration).Milliseconds())
+		a.connectJobKey("seek", func() error { return state.client.Command(target, action, extra) })
+		return true
 	case "advance":
 		if state.ref == nil {
 			return false
@@ -426,7 +477,7 @@ func (a *app) connectControl(action string, value any) bool {
 		extra["repeating_track"] = mode == player.RepeatOne
 	case "volume":
 		volume := value.(float64)
-		a.connectJob(func() error { return state.client.Volume(target, volume) })
+		a.connectJobKey("volume", func() error { return state.client.Volume(target, volume) })
 		return true
 	case "jump":
 		// A track of the queue Spotify gave is skipped to where it is, as
