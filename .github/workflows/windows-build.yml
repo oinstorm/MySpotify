@@ -34,30 +34,8 @@ jobs:
         run: Get-ChildItem -Recurse -Filter *.go | ForEach-Object { gofmt -w $_.FullName }
       - name: Vet
         run: go vet ./...
-      - name: Spotify tests
-        run: go test -v ./internal/spotify
-      - name: App update tests
-        run: go test -v ./internal/app -run "^(TestUpdate|TestAutoUpdateSetting|TestNoteLines)"
-      - name: App UI and account tests
-        run: go test -v ./internal/app -run "^(TestAccount|TestArtist|TestArtwork|TestBackdrop|TestBrowse|TestCache|TestConnect|TestCover|TestCovered|TestCovers|TestScroll|TestShort|TestArt|TestPlay|TestSigned|TestBack|TestHome|TestLibrary|TestLike|TestLog|TestNotch|TestNow|TestQueue)"
-      - name: App playlist and queue tests
-        run: go test -v ./internal/app -run "^(TestAdd|TestRemove|TestNo|TestCreate|TestRename|TestDelete|TestCancel|TestSave|TestRadio|TestPlayed|TestRecent|TestScrub|TestSeal|TestSession)"
-      - name: App sign-in flow tests
-        run: go test -v ./internal/app -run "^(TestPodcast|TestSignIn|TestSession)"
-      - name: App space test
-        run: go test -v ./internal/app -run "^TestSpace$"
-      - name: App track test
-        run: go test -v ./internal/app -run "^TestTrack$"
-      - name: App lyrics tests
-        run: go test -v ./internal/app -run "^(TestLong|TestSong|TestEpisodes)$"
-      - name: App tray and clock tests
-        run: go test -v ./internal/app -run "^(TestTray|TestClock)"
-      - name: App video and menu tests
-        run: go test -v ./internal/app -run "^(TestMV|TestSkeleton|TestSongMenu)"
-      - name: Player tests
-        run: go test -v ./internal/player
-      - name: Other Go tests
-        run: go test -v ./internal/lyrics
+      - name: Go tests
+        run: go test ./...
       - name: Player page tests
         run: node internal/player/web/player.test.cjs
       - name: Build
