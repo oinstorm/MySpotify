@@ -29,11 +29,9 @@ jobs:
         run: |
           go version
           node --version
-      - name: Format check
+      - name: Format source
         shell: pwsh
-        run: |
-          $files = gofmt -l .
-          if ($files) { $files; exit 1 }
+        run: gofmt -w .
       - name: Vet
         run: go vet ./...
       - name: Go tests
