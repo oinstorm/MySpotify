@@ -34,10 +34,14 @@ jobs:
         run: Get-ChildItem -Recurse -Filter *.go | ForEach-Object { gofmt -w $_.FullName }
       - name: Vet
         run: go vet ./...
-      - name: Go tests
-        run: go test ./...
-      - name: Player page tests
-        run: node internal/player/web/player.test.cjs
+      - name: Spotify tests
+        run: go test -v ./internal/spotify
+      - name: App tests
+        run: go test -v ./internal/app
+      - name: Player tests
+        run: go test -v ./internal/player
+      - name: Other Go tests
+        run: go test -v ./internal/lyrics
       - name: Build
         shell: pwsh
         run: |
