@@ -157,6 +157,20 @@ func TestConnectRepeatChangeWaitsForConfirmation(t *testing.T) {
 	}
 }
 
+// A Connect shuffle change remains visible until the matching remote state arrives.
+func TestConnectShuffleChangeWaitsForConfirmation(t *testing.T) {
+	p := New(func(func()) {})
+	p.Control = func(action string, value any) bool { return action == "shuffle" }
+	p.ToggleShuffle()
+	if !p.Shuffle() {
+		t.Fatal("shuffle did not update optimistically")
+	}
+	p.ConnectOptions(spotify.ConnectOptions{Shuffle: boolPtr(true)})
+	if !p.Shuffle() {
+		t.Fatal("confirmed shuffle was lost")
+	}
+}
+
 func boolPtr(v bool) *bool { return &v }
 
 // A seek with no output keeps the requested position until media opens.

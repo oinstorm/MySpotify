@@ -74,12 +74,14 @@ type Player struct {
 	repeat  RepeatMode
 	volume  float64
 
-	repeatPending bool
-	repeatBefore  RepeatMode
-	repeatGen     int
+	shufflePending bool
+	shuffleBefore  bool
+	shuffleGen     int
+	repeatPending  bool
+	repeatBefore   RepeatMode
+	repeatGen      int
 
 	// A radio goes on with the tracks its feed gives, as the queue nears its end,
-	// for as long as nothing else is played.
 	radio    string
 	feed     func(got func([]spotify.Track))
 	radioGen int  // counts radios, to drop what an old one gives
@@ -500,10 +502,27 @@ func (p *Player) shuffleOrder(first int) {
 }
 
 func (p *Player) ToggleShuffle() {
-	if p.control("shuffle", !p.shuffle) {
+	want := !p.shuffle
+	if p.control("shuffle", want) {
+		p.shuffleBefore = p.shuffle
+		p.shuffle = want
+		p.shufflePending = true
+		p.shuffleGen++
+		gen := p.shuffleGen
+		p.sync()
+		time.AfterFunc(2*time.Second, func() {
+			p.post(func() {
+				if gen != p.shuffleGen || !p.shufflePending {
+					return
+				}
+				p.shuffle = p.shuffleBefore
+				p.shufflePending = false
+				p.sync()
+			})
+		})
 		return
 	}
-	p.shuffle = !p.shuffle
+	p.shuffle = want
 	if len(p.order) > 0 {
 		cur := p.order[max(p.at, 0)]
 		if p.shuffle {

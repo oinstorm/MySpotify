@@ -85,3 +85,18 @@ func TestConnectQueueAnnouncesANamedArtist(t *testing.T) {
 		t.Fatalf("artist %q, %d changes", p.Current().ArtistNames(), changed)
 	}
 }
+
+// A Connect queue refresh keeps the local shuffle order and current track.
+func TestConnectQueueKeepsShuffleOrder(t *testing.T) {
+	p := New(func(func()) {})
+	p.Cue([]spotify.Track{{ID: "one"}, {ID: "two"}, {ID: "three"}})
+	p.shuffle = true
+	p.ConnectQueue([]spotify.Track{{ID: "one"}, {ID: "two"}, {ID: "three"}})
+	order, at := p.PlayOrder()
+	if at != 0 || len(order) != 3 || order[0] != 0 {
+		t.Fatalf("order %v at %d", order, at)
+	}
+	if !p.Shuffle() || p.Current().ID != "one" {
+		t.Fatalf("shuffle %v current %v", p.Shuffle(), p.Current().ID)
+	}
+}

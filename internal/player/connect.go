@@ -15,10 +15,21 @@ func (p *Player) ConnectQueue(tracks []spotify.Track) {
 		return
 	}
 	renamed := p.track.ArtistNames() != tracks[0].ArtistNames()
+	current := p.track.URI()
 	p.queue = append([]spotify.Track(nil), tracks...)
 	p.order = make([]int, len(tracks))
 	for index := range p.order {
 		p.order[index] = index
+	}
+	if p.shuffle {
+		first := 0
+		for index, track := range p.queue {
+			if track.URI() == current {
+				first = index
+				break
+			}
+		}
+		p.shuffleOrder(first)
 	}
 	p.at = 0
 	p.track = &p.queue[0]
@@ -33,7 +44,13 @@ func (p *Player) ConnectQueue(tracks []spotify.Track) {
 
 func (p *Player) ConnectOptions(options spotify.ConnectOptions) {
 	if options.Shuffle != nil {
-		p.shuffle = *options.Shuffle
+		shuffle := *options.Shuffle
+		if p.shufflePending && shuffle == p.shuffle {
+			p.shufflePending = false
+			p.shuffleGen++
+		} else if !p.shufflePending {
+			p.shuffle = shuffle
+		}
 	}
 	if options.RepeatContext != nil && options.RepeatTrack != nil {
 		mode := RepeatOff
@@ -51,10 +68,6 @@ func (p *Player) ConnectOptions(options spotify.ConnectOptions) {
 		}
 	}
 	p.sync()
-}
-
-func (p *Player) control(action string, value any) bool {
-	return p.Control != nil && p.Control(action, value)
 }
 
 func (p *Player) ApplyConnect(track spotify.Track, position time.Duration, paused bool) {
