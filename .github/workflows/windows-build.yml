@@ -66,6 +66,15 @@ jobs:
           New-Item -ItemType Directory -Force build-test | Out-Null
           $env:CGO_ENABLED = "0"
           go build -trimpath -ldflags="-H windowsgui -s -w" -o build-test/MySpotify.exe .
+          (Get-FileHash build-test/MySpotify.exe -Algorithm SHA256).Hash | Set-Content build-test/MySpotify.exe.sha256
+      - name: Upload standalone executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: MySpotify-windows-amd64-exe-${{ github.sha }}
+          path: |
+            build-test/MySpotify.exe
+            build-test/MySpotify.exe.sha256
+          retention-days: 14
       - name: Package
         shell: pwsh
         run: |
