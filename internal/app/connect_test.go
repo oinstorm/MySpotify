@@ -18,7 +18,7 @@ import (
 func testConnectApp(t *testing.T) *app {
 	t.Helper()
 	a := newTestApp()
-	a.connect = &connectState{client: spotify.NewConnect("local", "Vinyl", nil), observer: true, receiver: true, jobs: make(chan func() error, 32), done: make(chan struct{})}
+	a.connect = &connectState{client: spotify.NewConnect("local", "Vinyl", nil), observer: true, receiver: true, jobs: make(chan func() error, 32), coalesced: map[string]func() error{}, coalescedQueued: map[string]bool{}, done: make(chan struct{})}
 	t.Cleanup(a.connect.client.Close)
 	a.pl.Control = a.connectControl
 	a.pl.Cue([]spotify.Track{{ID: "one", Name: "One", Duration: 200000}})
