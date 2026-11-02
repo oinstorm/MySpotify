@@ -50,12 +50,13 @@ jobs:
         run: go test -v ./internal/app -run "^(TestAccount|TestArtist|TestArtwork|TestBackdrop|TestBrowse|TestCache|TestCover|TestCovered|TestCovers|TestScroll|TestShort|TestArt|TestPlay|TestSigned|TestBack|TestHome|TestLibrary|TestLike|TestLog|TestNotch|TestNow|TestQueue)"
       - name: Connect remote ownership
         shell: pwsh
-        run: go test -v ./internal/app -run "^TestConnectRemoteOwnership$" 2>&1 | Tee-Object connect-ownership.log; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        run: go test -v ./internal/app -run '^TestConnectRemoteOwnership$' 2>&1 | Tee-Object connect-ownership.log; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Connect revoke and resume
         shell: pwsh
-        run: go test -v ./internal/app -run "^(TestConnectRevokesOwnership|TestConnectResumeAndPlayRouting)$" 2>&1 | Tee-Object connect-revoke.log; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        run: go test -v ./internal/app -run '^(TestConnectRevokesOwnership|TestConnectResumeAndPlayRouting)$' 2>&1 | Tee-Object connect-revoke.log; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Connect queue and device tests
-        run: go test -v ./internal/app -run "^(TestConnectAdoptsExtendedQueue|TestConnectDeviceMenu|TestConnectQueueIsTheClusters|TestConnectNamesTheArtist)" 2>&1 | Tee-Object connect-queue.log; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        shell: pwsh
+        run: go test -v ./internal/app -run '^(TestConnectAdoptsExtendedQueue|TestConnectDeviceMenu|TestConnectQueueIsTheClusters|TestConnectNamesTheArtist)$' 2>&1 | Tee-Object connect-queue.log; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Upload Connect logs
         if: always()
         uses: actions/upload-artifact@v4
