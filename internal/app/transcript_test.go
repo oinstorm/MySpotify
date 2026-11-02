@@ -50,7 +50,7 @@ func TestLongLyricsBuildOnlyWhatShows(t *testing.T) {
 		t.Helper()
 		r, ok := tt.Find(fmt.Sprintf("line %04d, said as it plays", i))
 		if !ok {
-			t.Fatalf("line %d is not shown", i)
+			t.Fatalf("line %d is not shown at position %v; current line %d, lyric track %q", i, a.pl.SongPosition(), lyrics.Index(lines, a.pl.SongPosition()), a.lyricTrack)
 		}
 		return r
 	}
