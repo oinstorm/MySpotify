@@ -40,7 +40,7 @@ func TestConnectRemoteOwnership(t *testing.T) {
 	a.pl.TogglePlay()
 	a.pl.Seek(3 * time.Second)
 	a.pl.Next()
-	if len(a.connect.jobs) != 2 || !a.pl.IsRemote() {
+	if len(a.connect.jobs) != 3 || !a.pl.IsRemote() {
 		t.Fatal("remote controls did not route to Connect")
 	}
 	a.connectEvent(spotify.ConnectEvent{Kind: "command", Data: json.RawMessage(`{"type":"replace_state","state_ref":null}`)})
