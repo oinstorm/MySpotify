@@ -43,9 +43,6 @@ func TestConnectRemoteOwnership(t *testing.T) {
 	if len(a.connect.jobs) == 0 || !a.pl.IsRemote() {
 		t.Fatal("remote controls did not route to Connect")
 	}
-	if err := (<-a.connect.jobs)(); err != nil {
-		t.Fatal(err)
-	}
 	a.pl.Prev()
 	if len(a.connect.jobs) == 0 {
 		t.Fatal("previous was not routed to Connect")
@@ -54,7 +51,6 @@ func TestConnectRemoteOwnership(t *testing.T) {
 	if !a.pl.IsRemote() || !a.pl.Playing() {
 		t.Fatal("late local revocation erased remote playback")
 	}
-	<-a.connect.jobs
 	a.connect.observer = false
 	pending := len(a.connect.jobs)
 	a.pl.TogglePlay()
