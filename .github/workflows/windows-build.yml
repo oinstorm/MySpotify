@@ -71,8 +71,10 @@ jobs:
         run: go test -v ./internal/app -run "^(TestPodcast|TestSignIn)"
       - name: App space and track tests
         run: go test -v ./internal/app -run "^(TestSpace|TestTrack)"
-      - name: App lyrics tests
-        run: go test -v ./internal/app -run "^(TestLong|TestSong)"
+      - name: App long transcript test
+        run: go test -v ./internal/app -run "^TestLongLyricsBuildOnlyWhatShows$"
+      - name: App song lyric tests
+        run: go test -v ./internal/app -run "^(TestSongLyricsBuildWhole|TestEpisodesTranscriptIsItsSubtitles)$"
       - name: App episode test
         run: go test -v ./internal/app -run "^TestEpisodes$"
       - name: App tray video and menus
