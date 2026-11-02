@@ -41,7 +41,8 @@ func TestLongLyricsBuildOnlyWhatShows(t *testing.T) {
 	a := newTestApp()
 	a.settings = defaultSettings()
 	a.pl.Cue([]spotify.Track{{ID: "ep", Name: "Episode", Episode: true, Duration: 9000 * 1000}})
-	a.pl.SetLyrics(numberedLines(3000))
+	lines := numberedLines(3000)
+	a.pl.SetLyrics(lines)
 	a.pl.Hold(1500*3*time.Second + 100*time.Millisecond)
 	a.nowPlaying, a.npPane = true, paneLyrics
 	tt := ui.NewTester(a.view, 1200, 800)
@@ -50,7 +51,7 @@ func TestLongLyricsBuildOnlyWhatShows(t *testing.T) {
 		t.Helper()
 		r, ok := tt.Find(fmt.Sprintf("line %04d, said as it plays", i))
 		if !ok {
-			t.Fatalf("line %d is not shown", i)
+			t.Fatalf("line %d missing: position=%v lineIndex=%d lyricTrack=%q", i, a.pl.SongPosition(), lyrics.Index(lines, a.pl.SongPosition()), a.lyricTrack)
 		}
 		return r
 	}
