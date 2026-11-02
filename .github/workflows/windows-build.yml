@@ -49,11 +49,21 @@ jobs:
       - name: App UI tests
         run: go test -v ./internal/app -run "^(TestAccount|TestArtist|TestArtwork|TestBackdrop|TestBrowse|TestCache|TestCover|TestCovered|TestCovers|TestScroll|TestShort|TestArt|TestPlay|TestSigned|TestBack|TestHome|TestLibrary|TestLike|TestLog|TestNotch|TestNow|TestQueue)"
       - name: Connect remote ownership
-        run: go test -v ./internal/app -run "^TestConnectRemoteOwnership$"
+        shell: pwsh
+        run: go test -v ./internal/app -run "^TestConnectRemoteOwnership$" 2>&1 | Tee-Object connect-ownership.log; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Connect revoke and resume
-        run: go test -v ./internal/app -run "^(TestConnectRevokesOwnership|TestConnectResumeAndPlayRouting)$"
+        shell: pwsh
+        run: go test -v ./internal/app -run "^(TestConnectRevokesOwnership|TestConnectResumeAndPlayRouting)$" 2>&1 | Tee-Object connect-revoke.log; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Connect queue and device tests
-        run: go test -v ./internal/app -run "^(TestConnectAdoptsExtendedQueue|TestConnectDeviceMenu|TestConnectQueueIsTheClusters|TestConnectNamesTheArtist)"
+        run: go test -v ./internal/app -run "^(TestConnectAdoptsExtendedQueue|TestConnectDeviceMenu|TestConnectQueueIsTheClusters|TestConnectNamesTheArtist)" 2>&1 | Tee-Object connect-queue.log; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Upload Connect logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: connect-test-logs-${{ github.sha }}
+          path: connect-*.log
+          if-no-files-found: ignore
+          retention-days: 3
       - name: App remaining tests
         run: go test -v ./internal/app -run "^(TestAdd|TestRemove|TestNo|TestCreate|TestRename|TestDelete|TestCancel|TestSave|TestRadio|TestPlayed|TestRecent|TestScrub|TestSeal|TestSession|TestPodcast|TestSignIn|TestSpace|TestTrack|TestLong|TestSong|TestEpisodes|TestTray|TestClock|TestMV|TestSkeleton|TestSongMenu)"
       - name: Player tests
