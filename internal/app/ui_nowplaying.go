@@ -574,6 +574,12 @@ func (g *lyricGlide) to(c *ui.Context, s *ui.ScrollState, target float32) {
 	now := c.Now()
 	lag, v := g.at(now)
 	shown := float64(s.Y) + lag
+	if math.Abs(float64(target)-shown) > 1000 {
+		g.target, g.pending = target, true
+		g.on = false
+		c.AnimationFrame()
+		return
+	}
 	g.target, g.pending = target, true
 	g.on = !c.Preferences().ReduceMotion
 	g.start, g.a = now, shown-float64(target)
