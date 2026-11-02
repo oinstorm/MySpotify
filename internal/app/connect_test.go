@@ -76,8 +76,8 @@ func TestConnectRevokesOwnership(t *testing.T) {
 func TestConnectResumeAndPlayRouting(t *testing.T) {
 	a := testConnectApp(t)
 	a.pl.TogglePlay()
-	if len(a.connect.jobs) != 1 || a.pl.Playing() {
-		t.Fatal("saved session was played locally before the server accepted it")
+	if !a.pl.Playing() || len(a.connect.jobs) != 0 {
+		t.Fatal("local playback was intercepted by background Connect")
 	}
 	request := player.QueueRequest{Tracks: []spotify.Track{{ID: "a"}, {ID: "b"}}, Start: 1}
 	body := connectPlayBody(request)
@@ -86,8 +86,8 @@ func TestConnectResumeAndPlayRouting(t *testing.T) {
 		t.Fatal("play context lost tracks or starting index")
 	}
 	a.pl.PlayQueue(request.Tracks, 1)
-	if len(a.connect.jobs) != 2 {
-		t.Fatal("new queue was not routed")
+	if len(a.connect.jobs) != 0 || a.pl.Current().ID != "b" {
+		t.Fatal("local queue was routed to background Connect")
 	}
 }
 
