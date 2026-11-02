@@ -48,8 +48,10 @@ jobs:
         run: go test -v ./internal/app -run "^(TestUpdate|TestAutoUpdateSetting|TestNoteLines)"
       - name: App UI tests
         run: go test -v ./internal/app -run "^(TestAccount|TestArtist|TestArtwork|TestBackdrop|TestBrowse|TestCache|TestCover|TestCovered|TestCovers|TestScroll|TestShort|TestArt|TestPlay|TestSigned|TestBack|TestHome|TestLibrary|TestLike|TestLog|TestNotch|TestNow|TestQueue)"
-      - name: Connect ownership tests
-        run: go test -v ./internal/app -run "^(TestConnectRemoteOwnership|TestConnectRevokesOwnership|TestConnectResumeAndPlayRouting)"
+      - name: Connect remote ownership
+        run: go test -v ./internal/app -run "^TestConnectRemoteOwnership$"
+      - name: Connect revoke and resume
+        run: go test -v ./internal/app -run "^(TestConnectRevokesOwnership|TestConnectResumeAndPlayRouting)$"
       - name: Connect queue and device tests
         run: go test -v ./internal/app -run "^(TestConnectAdoptsExtendedQueue|TestConnectDeviceMenu|TestConnectQueueIsTheClusters|TestConnectNamesTheArtist)"
       - name: App remaining tests
