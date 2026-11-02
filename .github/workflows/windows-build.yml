@@ -72,7 +72,12 @@ jobs:
       - name: App space and track tests
         run: go test -v ./internal/app -run "^(TestSpace|TestTrack)"
       - name: App long transcript test
-        run: go test -v ./internal/app -run "^TestLongLyricsBuildOnlyWhatShows$"
+        shell: pwsh
+        run: |
+          $output = go test -v ./internal/app -run '^TestLongLyricsBuildOnlyWhatShows$' 2>&1
+          $exit = $LASTEXITCODE
+          $output | ForEach-Object { Write-Output "::error::$_" }
+          exit $exit
       - name: App song lyric tests
         run: go test -v ./internal/app -run "^(TestSongLyricsBuildWhole|TestEpisodesTranscriptIsItsSubtitles)$"
       - name: App episode test
