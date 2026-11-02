@@ -74,11 +74,16 @@ jobs:
       - name: App long transcript test
         shell: pwsh
         run: |
-          $output = go test -v ./internal/app -run '^TestLongLyricsBuildOnlyWhatShows$' 2>&1
-          $exit = $LASTEXITCODE
-          if ($exit -ne 0) { $output | ForEach-Object { Add-Content $env:GITHUB_STEP_SUMMARY $_ } }
-          $output | ForEach-Object { Write-Output $_ }
-          exit $exit
+          go test -v ./internal/app -run '^TestLongLyricsBuildOnlyWhatShows$' *> long-transcript.log
+          exit $LASTEXITCODE
+      - name: Upload transcript diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: transcript-test-log-${{ github.sha }}
+          path: long-transcript.log
+          if-no-files-found: ignore
+          retention-days: 3
       - name: App song lyric tests
         run: go test -v ./internal/app -run "^(TestSongLyricsBuildWhole|TestEpisodesTranscriptIsItsSubtitles)$"
       - name: App episode test
