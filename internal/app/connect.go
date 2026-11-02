@@ -498,6 +498,8 @@ func (a *app) connectControl(action string, value any) bool {
 		})
 		return true
 	case "skip_next", "skip_prev":
+		a.connectJob(func() error { return state.client.Command(target, action, extra) })
+		return true
 	default:
 		return false
 	}

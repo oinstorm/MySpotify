@@ -43,6 +43,13 @@ func TestConnectRemoteOwnership(t *testing.T) {
 	if len(a.connect.jobs) != 3 || !a.pl.IsRemote() {
 		t.Fatal("remote controls did not route to Connect")
 	}
+	if err := (<-a.connect.jobs)(); err != nil {
+		t.Fatal(err)
+	}
+	a.pl.Prev()
+	if len(a.connect.jobs) != 3 {
+		t.Fatal("previous was not routed to Connect")
+	}
 	a.connectEvent(spotify.ConnectEvent{Kind: "command", Data: json.RawMessage(`{"type":"replace_state","state_ref":null}`)})
 	if !a.pl.IsRemote() || !a.pl.Playing() {
 		t.Fatal("late local revocation erased remote playback")
@@ -50,7 +57,7 @@ func TestConnectRemoteOwnership(t *testing.T) {
 	<-a.connect.jobs
 	a.connect.observer = false
 	a.pl.TogglePlay()
-	if len(a.connect.jobs) != 1 || a.toast == "" {
+	if len(a.connect.jobs) != 2 || a.toast == "" {
 		t.Fatal("offline remote controls should wait, not start locally")
 	}
 }
