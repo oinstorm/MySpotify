@@ -60,6 +60,7 @@ func TestConnectRemoteOwnership(t *testing.T) {
 	a.pl.TogglePlay()
 	if len(a.connect.jobs) != pending || a.toast == "" {
 		t.Fatal("offline remote controls should wait, not start locally")
+	}
 }
 
 // A revoked state or disconnected receiver must immediately stop local playback.
