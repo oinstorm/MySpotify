@@ -67,8 +67,10 @@ jobs:
           retention-days: 3
       - name: App edit and session tests
         run: go test -v ./internal/app -run "^(TestAdd|TestRemove|TestNo|TestCreate|TestRename|TestDelete|TestCancel|TestSave|TestRadio|TestPlayed|TestRecent|TestScrub|TestSeal|TestSession)"
-      - name: App media and remaining tests
-        run: go test -v ./internal/app -run "^(TestPodcast|TestSignIn|TestSpace|TestTrack|TestLong|TestSong|TestEpisodes|TestTray|TestClock|TestMV|TestSkeleton|TestSongMenu)"
+      - name: App sign-in and transcript tests
+        run: go test -v ./internal/app -run "^(TestPodcast|TestSignIn|TestSpace|TestTrack|TestLong|TestSong|TestEpisodes)"
+      - name: App tray video and menus
+        run: go test -v ./internal/app -run "^(TestTray|TestClock|TestMV|TestSkeleton|TestSongMenu)"
       - name: Player tests
         run: go test -v ./internal/player
       - name: Lyrics tests
