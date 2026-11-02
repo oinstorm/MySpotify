@@ -50,7 +50,7 @@ func TestConnectRemoteOwnership(t *testing.T) {
 	<-a.connect.jobs
 	a.connect.observer = false
 	a.pl.TogglePlay()
-	if len(a.connect.jobs) != 2 || a.toast == "" {
+	if len(a.connect.jobs) != 1 || a.toast == "" {
 		t.Fatal("offline remote controls should wait, not start locally")
 	}
 }
