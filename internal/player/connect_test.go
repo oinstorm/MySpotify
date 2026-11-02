@@ -66,7 +66,7 @@ func TestConnectInterceptsControls(t *testing.T) {
 	p.ToggleShuffle()
 	p.CycleRepeat()
 	p.ended()
-	if len(actions) != 10 || p.Current().ID != "original" || p.out != nil {
+	if len(actions) != 11 || p.Current().ID != "original" || p.out != nil {
 		t.Fatalf("controls escaped routing: %v", actions)
 	}
 }
@@ -98,5 +98,30 @@ func TestConnectQueueKeepsShuffleOrder(t *testing.T) {
 	}
 	if !p.Shuffle() || p.Current().ID != "one" {
 		t.Fatalf("shuffle %v current %v", p.Shuffle(), p.Current().ID)
+	}
+}
+
+// Turning shuffle on over Connect asks it for both, so that repeat goes off.
+func TestConnectShuffleTurnsRepeatOff(t *testing.T) {
+	p := New(func(func()) {})
+	p.repeat = RepeatAll
+	var asked []string
+	p.Control = func(action string, value any) bool { asked = append(asked, action); return true }
+	p.ToggleShuffle()
+	if len(asked) != 2 || asked[0] != "shuffle" || asked[1] != "repeat" {
+		t.Fatalf("asked Connect for %v", asked)
+	}
+	if !p.Shuffle() || p.Repeat() != RepeatOff {
+		t.Fatalf("shuffle %v with repeat %v", p.Shuffle(), p.Repeat())
+	}
+}
+
+// A remote reporting shuffle and repeat both on keeps the one it changed.
+func TestConnectOptionsKeepShuffleAndRepeatApart(t *testing.T) {
+	p := New(func(func()) {})
+	p.ConnectOptions(spotify.ConnectOptions{Shuffle: boolPtr(true)})
+	p.ConnectOptions(spotify.ConnectOptions{Shuffle: boolPtr(true), RepeatContext: boolPtr(true), RepeatTrack: boolPtr(false)})
+	if p.Shuffle() || p.Repeat() != RepeatAll {
+		t.Fatalf("shuffle %v with repeat %v", p.Shuffle(), p.Repeat())
 	}
 }

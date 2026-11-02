@@ -42,14 +42,18 @@ func (p *Player) ConnectQueue(tracks []spotify.Track) {
 	p.lyricsAhead()
 }
 
+// ConnectOptions takes the shuffle and repeat a remote reported. Shuffle and
+// repeat play one at a time: when Spotify reports both, the one it changed is
+// what the listener asked for, and the other is dropped.
 func (p *Player) ConnectOptions(options spotify.ConnectOptions) {
+	shuffle, repeat := p.shuffle, p.repeat
 	if options.Shuffle != nil {
-		shuffle := *options.Shuffle
-		if p.shufflePending && shuffle == p.shuffle {
+		want := *options.Shuffle
+		if p.shufflePending && want == p.shuffle {
 			p.shufflePending = false
 			p.shuffleGen++
 		} else if !p.shufflePending {
-			p.shuffle = shuffle
+			shuffle = want
 		}
 	}
 	if options.RepeatContext != nil && options.RepeatTrack != nil {
@@ -64,9 +68,18 @@ func (p *Player) ConnectOptions(options spotify.ConnectOptions) {
 			p.repeatPending = false
 			p.repeatGen++
 		} else if !p.repeatPending {
-			p.repeat = mode
+			repeat = mode
 		}
 	}
+	if shuffle && repeat != RepeatOff {
+		// The other of the two went on as this one was reported: it stays.
+		if repeat != p.repeat && shuffle == p.shuffle {
+			shuffle = false
+		} else {
+			repeat = RepeatOff
+		}
+	}
+	p.shuffle, p.repeat = shuffle, repeat
 	p.sync()
 }
 func (p *Player) control(action string, value any) bool {

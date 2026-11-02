@@ -72,18 +72,7 @@ jobs:
       - name: App space and track tests
         run: go test -v ./internal/app -run "^(TestSpace|TestTrack)"
       - name: App long transcript test
-        shell: pwsh
-        run: |
-          go test -v ./internal/app -run '^TestLongLyricsBuildOnlyWhatShows$' *> long-transcript.log
-          exit $LASTEXITCODE
-      - name: Upload transcript diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: transcript-test-log-${{ github.sha }}
-          path: long-transcript.log
-          if-no-files-found: ignore
-          retention-days: 3
+        run: go test -v ./internal/app -run "^TestLongLyricsBuildOnlyWhatShows$"
       - name: App song lyric tests
         run: go test -v ./internal/app -run "^(TestSongLyricsBuildWhole|TestEpisodesTranscriptIsItsSubtitles)$"
       - name: App episode test

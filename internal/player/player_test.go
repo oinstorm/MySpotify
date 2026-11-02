@@ -136,6 +136,29 @@ func TestRepeatSurvivesTrackChange(t *testing.T) {
 	}
 }
 
+// Shuffle and repeat never both hold: each turns the other off.
+func TestShuffleAndRepeatExcludeEachOther(t *testing.T) {
+	p := New(func(func()) {})
+	p.Cue([]spotify.Track{{ID: "one"}, {ID: "two"}})
+	p.CycleRepeat()
+	p.ToggleShuffle()
+	if !p.Shuffle() || p.Repeat() != RepeatOff {
+		t.Fatalf("shuffle %v with repeat %v", p.Shuffle(), p.Repeat())
+	}
+	p.CycleRepeat()
+	if p.Repeat() != RepeatAll || p.Shuffle() {
+		t.Fatalf("repeat %v with shuffle %v", p.Repeat(), p.Shuffle())
+	}
+	p.CycleRepeat()
+	if p.Repeat() != RepeatOne || p.Shuffle() {
+		t.Fatalf("repeat %v with shuffle %v", p.Repeat(), p.Shuffle())
+	}
+	p.CycleRepeat()
+	if p.Repeat() != RepeatOff || p.Shuffle() {
+		t.Fatalf("repeat %v with shuffle %v", p.Repeat(), p.Shuffle())
+	}
+}
+
 // A Connect repeat change remains visible until the matching remote state arrives.
 func TestConnectRepeatChangeWaitsForConfirmation(t *testing.T) {
 	p := New(func(func()) {})

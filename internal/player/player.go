@@ -74,11 +74,11 @@ type Player struct {
 	repeat  RepeatMode
 	volume  float64
 
+	// What Connect was asked and has not confirmed yet, counted so that a
+	// stale answer is dropped.
 	shufflePending bool
-	shuffleBefore  bool
 	shuffleGen     int
 	repeatPending  bool
-	repeatBefore   RepeatMode
 	repeatGen      int
 
 	// A radio goes on with the tracks its feed gives, as the queue nears its end,
@@ -501,29 +501,34 @@ func (p *Player) shuffleOrder(first int) {
 	}
 }
 
+// ToggleShuffle turns shuffle on or off. Shuffle and repeat play one at a
+// time, as Spotify's apps have it: shuffle on turns repeat off.
 func (p *Player) ToggleShuffle() {
-	want := !p.shuffle
-	if p.control("shuffle", want) {
-		p.shuffleBefore = p.shuffle
-		p.shuffle = want
-		p.shufflePending = true
-		p.shuffleGen++
-		gen := p.shuffleGen
-		p.sync()
-		time.AfterFunc(2*time.Second, func() {
-			p.post(func() {
-				if gen != p.shuffleGen || !p.shufflePending {
-					return
-				}
-				p.shuffle = p.shuffleBefore
-				p.shufflePending = false
-				p.sync()
-			})
-		})
-		return
+	p.setModes(!p.shuffle, RepeatOff)
+}
+
+// CycleRepeat goes from off to all, to one, and back to off. Repeat on turns
+// shuffle off; back to off leaves shuffle as it is.
+func (p *Player) CycleRepeat() {
+	mode := (p.repeat + 1) % 3
+	p.setModes(p.shuffle && mode == RepeatOff, mode)
+}
+
+// setModes sets shuffle and repeat together, so that they never both hold:
+// Connect is asked for each that changes, and what it does not confirm within
+// two seconds is taken back.
+func (p *Player) setModes(shuffle bool, repeat RepeatMode) {
+	fromShuffle, fromRepeat := p.shuffle, p.repeat
+	changedShuffle, changedRepeat := shuffle != fromShuffle, repeat != fromRepeat
+	remoteShuffle, remoteRepeat := false, false
+	if changedShuffle {
+		remoteShuffle = p.control("shuffle", shuffle)
 	}
-	p.shuffle = want
-	if len(p.order) > 0 {
+	if changedRepeat {
+		remoteRepeat = p.control("repeat", repeat)
+	}
+	p.shuffle, p.repeat = shuffle, repeat
+	if changedShuffle && !remoteShuffle && len(p.order) > 0 {
 		cur := p.order[max(p.at, 0)]
 		if p.shuffle {
 			p.shuffleOrder(cur)
@@ -535,32 +540,33 @@ func (p *Player) ToggleShuffle() {
 			p.at = cur
 		}
 	}
-	p.sync()
-}
-
-func (p *Player) CycleRepeat() {
-	mode := (p.repeat + 1) % 3
-	if p.control("repeat", mode) {
-		p.repeatBefore = p.repeat
-		p.repeat = mode
-		p.repeatPending = true
+	p.shufflePending, p.repeatPending = changedShuffle && remoteShuffle, changedRepeat && remoteRepeat
+	if p.shufflePending {
+		p.shuffleGen++
+	}
+	if p.repeatPending {
 		p.repeatGen++
-		gen := p.repeatGen
+	}
+	if !p.shufflePending && !p.repeatPending {
 		p.sync()
-		time.AfterFunc(2*time.Second, func() {
-			p.post(func() {
-				if gen != p.repeatGen || !p.repeatPending {
-					return
-				}
-				p.repeat = p.repeatBefore
-				p.repeatPending = false
-				p.sync()
-			})
-		})
 		return
 	}
-	p.repeat = mode
+	genShuffle, genRepeat := p.shuffleGen, p.repeatGen
 	p.sync()
+	time.AfterFunc(2*time.Second, func() {
+		p.post(func() {
+			if p.shufflePending && genShuffle == p.shuffleGen {
+				p.shuffle, p.shufflePending = fromShuffle, false
+			}
+			if p.repeatPending && genRepeat == p.repeatGen {
+				p.repeat, p.repeatPending = fromRepeat, false
+			}
+			if p.shuffle && p.repeat != RepeatOff {
+				p.shuffle = false
+			}
+			p.sync()
+		})
+	})
 }
 
 
@@ -1308,5 +1314,9 @@ func (p *Player) Restore(s Session) {
 	}
 	p.queue, p.order = s.Queue, s.Order
 	p.shuffle, p.repeat = s.Shuffle, s.Repeat%3
+	if p.shuffle && p.repeat != RepeatOff {
+		// Saved by a version that let both play: repeat is the one that stays.
+		p.shuffle = false
+	}
 	p.cue(s.At, false, time.Duration(s.Position)*time.Millisecond)
 }
