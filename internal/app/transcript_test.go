@@ -49,7 +49,9 @@ func TestLongLyricsBuildOnlyWhatShows(t *testing.T) {
 	said := func(i int) ui.Rect {
 		t.Helper()
 		r, ok := tt.Find(fmt.Sprintf("line %04d, said as it plays", i))
+		if !ok {
 			t.Fatalf("line %d is not shown", i)
+		}
 		return r
 	}
 	// The first line after Now Playing opens is placed as it still opens,
