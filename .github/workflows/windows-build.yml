@@ -76,7 +76,8 @@ jobs:
         run: |
           $output = go test -v ./internal/app -run '^TestLongLyricsBuildOnlyWhatShows$' 2>&1
           $exit = $LASTEXITCODE
-          $output | ForEach-Object { Write-Output "::error::$_" }
+          if ($exit -ne 0) { $output | ForEach-Object { Add-Content $env:GITHUB_STEP_SUMMARY $_ } }
+          $output | ForEach-Object { Write-Output $_ }
           exit $exit
       - name: App song lyric tests
         run: go test -v ./internal/app -run "^(TestSongLyricsBuildWhole|TestEpisodesTranscriptIsItsSubtitles)$"
