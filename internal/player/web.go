@@ -200,7 +200,11 @@ var uriAttr = regexp.MustCompile(`URI="([^"]*)"`)
 
 // Open loads m to play, paused at its start, and returns what plays it.
 func (w *Web) Open(m *spotify.Media) Output {
-	o := &webOut{w: w, dur: m.Duration, at: time.Now()}
+	return w.openAudio(m, "load")
+}
+
+func (w *Web) openAudio(m *spotify.Media, reason string) Output {
+	o := &webOut{w: w, dur: m.Duration, at: time.Now(), reason: reason}
 	w.mu.Lock()
 	w.gen++
 	o.gen = w.gen
@@ -224,7 +228,7 @@ func (w *Web) Open(m *spotify.Media) Output {
 // OpenVideo loads v to play, paused at its start, and returns what plays
 // it: its master playlist is the track's, its other playlists beside it.
 func (w *Web) OpenVideo(v *spotify.Video) Output {
-	o := &webOut{w: w, dur: v.Duration, at: time.Now(), license: v.License, video: true}
+	o := &webOut{w: w, dur: v.Duration, at: time.Now(), license: v.License, video: true, reason: "video"}
 	w.mu.Lock()
 	w.gen++
 	o.gen = w.gen
@@ -456,8 +460,14 @@ func (w *Web) forward(rw http.ResponseWriter, r *http.Request, method, target st
 			req.Header.Set("Content-Type", "application/octet-stream")
 		}
 		if res, err = spotify.Client.Do(req); err != nil {
+			if method == http.MethodPost && o != nil {
+				log.Printf("player: /license track=%d reason=%s attempt=%d status=transport-error", gen, o.reason, attempt+1)
+			}
 			http.Error(rw, err.Error(), http.StatusBadGateway)
 			return
+		}
+		if method == http.MethodPost && o != nil {
+			log.Printf("player: /license track=%d reason=%s attempt=%d status=%d", gen, o.reason, attempt+1, res.StatusCode)
 		}
 		out, _ = io.ReadAll(res.Body)
 		res.Body.Close()
@@ -472,7 +482,7 @@ func (w *Web) forward(rw http.ResponseWriter, r *http.Request, method, target st
 	}
 	wait := spotify.RetryAfter(res.Header)
 	if res.StatusCode != http.StatusOK {
-		log.Printf("player: %s: %s, retry after %v: %s", r.URL.Path, res.Status, wait, bytes.TrimSpace(out[:min(len(out), 200)]))
+		log.Printf("player: %s: %s, retry after %v", r.URL.Path, res.Status, wait)
 	}
 	o.answered(res.StatusCode, wait)
 	rw.WriteHeader(res.StatusCode)
@@ -484,6 +494,7 @@ func (w *Web) forward(rw http.ResponseWriter, r *http.Request, method, target st
 type webOut struct {
 	w        *Web
 	gen      int
+	reason   string
 	dur      time.Duration
 	manifest string
 	sources  []string

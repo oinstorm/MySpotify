@@ -391,7 +391,11 @@ func (a *app) playerBar(c *ui.Context) {
 							// message that goes on saying the same reads as
 							// stuck, and asking again is what keeps Spotify
 							// turning it away.
-							msg = fmt.Sprintf("Spotify 限流，约 %.0f 秒后自动继续", math.Ceil(left.Seconds()))
+							if pl.Playing() {
+								msg = fmt.Sprintf("Spotify 限流，约 %.0f 秒后自动继续", math.Ceil(left.Seconds()))
+							} else {
+								msg = fmt.Sprintf("Spotify 限流，约 %.0f 秒后可手动重试", math.Ceil(left.Seconds()))
+							}
 							c.After(time.Second)
 						}
 						ui.Text(c, msg).FontSize(12).TextColor(p.accent).SingleLine()

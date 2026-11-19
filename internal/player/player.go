@@ -230,12 +230,13 @@ func (p *Player) ended() {
 			}
 			p.failed(licence, wait)
 			return
+		} else if licence == http.StatusOK && !p.showsVideo {
+			p.licence.completed(time.Now(), p.gen)
 		}
 	}
 	if p.control("advance", nil) {
 		return
 	}
-	p.licence.playedFor(time.Now())
 	if p.repeat == RepeatOne {
 		p.out.Seek(0)
 		p.out.Play()
@@ -250,7 +251,7 @@ func (p *Player) ended() {
 		p.sync()
 		return
 	}
-	p.Next()
+	p.nextTrack("advance")
 }
 
 // failed goes on from a track the page could not play: licence is how the
@@ -277,12 +278,27 @@ func (p *Player) failed(licence int, wait time.Duration) {
 // it was. Nothing else may ask for a licence meanwhile.
 func (p *Player) throttled(wait time.Duration) {
 	until := p.licence.refused(time.Now(), wait)
-	d := time.Until(until)
 	from := p.Position()
 	p.stop()
-	p.pending, p.waiting = from, true
+	p.pending = from
+	if p.licence.manual() {
+		log.Printf("player: throttled, auto retry paused; cooldown %v", time.Until(until))
+		p.pauseForLicence()
+	} else {
+		log.Printf("player: throttled, again in %v", time.Until(until))
+		p.waitForLicence(time.Until(until))
+	}
+	p.sync()
+}
+
+func (p *Player) pauseForLicence() {
+	p.playing, p.waiting = false, false
+	p.err = "Spotify 限流，点击播放重试"
+}
+
+func (p *Player) waitForLicence(d time.Duration) {
+	p.waiting = true
 	p.err = "Spotify 暂时限流，稍后重试"
-	log.Printf("player: throttled, again in %v", d)
 	gen := p.gen
 	afterFunc(d, func() {
 		p.post(func() {
@@ -291,13 +307,15 @@ func (p *Player) throttled(wait time.Duration) {
 			}
 			p.waiting = false
 			p.licence.open()
-			log.Printf("player: throttled, asking again")
 			if p.playing {
-				p.loadSkipping(p.at, p.skipped, true, p.pending)
+				log.Printf("player: throttled, asking again")
+				p.loadFor(p.at, p.skipped, true, p.pending, "throttle-retry")
+			} else {
+				p.pauseForLicence()
+				p.sync()
 			}
 		})
 	})
-	p.sync()
 }
 
 // gated holds back a load while the licence gate is shut: asking now would
@@ -308,28 +326,15 @@ func (p *Player) gated(at, skipped int, play bool, from time.Duration) bool {
 	if !p.licence.shut(now) {
 		return false
 	}
-	if p.waiting {
-		// A wait is already running for it: one more would double it.
-		return true
+	p.cue(at, play, from)
+	p.skipped = skipped
+	if p.licence.manual() || !play {
+		p.pauseForLicence()
+	} else {
+		d := p.licence.left(now)
+		log.Printf("player: throttled, waiting %v before asking again", d)
+		p.waitForLicence(d)
 	}
-	p.pending, p.waiting = from, true
-	p.err = "Spotify 暂时限流，稍后重试"
-	d := p.licence.left(now)
-	log.Printf("player: throttled, waiting %v before asking again", d)
-	gen := p.gen
-	afterFunc(d, func() {
-		p.post(func() {
-			if gen != p.gen || !p.waiting {
-				return
-			}
-			p.waiting = false
-			p.licence.open()
-			log.Printf("player: throttled, asking again")
-			if p.playing {
-				p.loadSkipping(at, skipped, play, p.pending)
-			}
-		})
-	})
 	p.sync()
 	return true
 }
@@ -637,6 +642,10 @@ func (p *Player) Lyrics() ([]lyrics.Line, bool) { return p.lyrics, p.lyricsLoade
 func (p *Player) PlayOrder() ([]int, int) { return p.order, p.at }
 
 func (p *Player) Next() {
+	p.nextTrack("next")
+}
+
+func (p *Player) nextTrack(reason string) {
 	if p.control("skip_next", nil) {
 		return
 	}
@@ -652,7 +661,7 @@ func (p *Player) Next() {
 		}
 		at = 0
 	}
-	p.load(at)
+	p.loadFor(at, 0, true, 0, reason)
 }
 
 func (p *Player) Prev() {
@@ -711,7 +720,10 @@ func (p *Player) TogglePlay() {
 			p.playing = !p.playing
 			p.sync()
 		case len(p.order) > 0:
-			p.loadSkipping(max(p.at, 0), 0, true, p.pending)
+			if p.licence.manual() && p.licence.shut(time.Now()) {
+				return
+			}
+			p.loadFor(max(p.at, 0), 0, true, p.pending, "resume")
 		}
 		return
 	}
@@ -971,6 +983,10 @@ func (p *Player) load(at int) {
 // loadSkipping loads the track at order[at], to play or not, from from,
 // skipping those that cannot play: skipped of them so far.
 func (p *Player) loadSkipping(at, skipped int, play bool, from time.Duration) {
+	p.loadFor(at, skipped, play, from, "load")
+}
+
+func (p *Player) loadFor(at, skipped int, play bool, from time.Duration, reason string) {
 	if p.gated(at, skipped, play, from) {
 		return
 	}
@@ -1026,7 +1042,7 @@ func (p *Player) loadSkipping(at, skipped int, play bool, from time.Duration) {
 				return
 			}
 			p.media = m
-			p.open(gen, m, v)
+			p.open(gen, m, v, reason)
 			p.mediaAhead()
 		})
 	}()
@@ -1035,7 +1051,7 @@ func (p *Player) loadSkipping(at, skipped int, play bool, from time.Duration) {
 // open plays the current track, of load gen, from p.pending: its music
 // video v, if there is one to play and somewhere to play it, or else its
 // audio m.
-func (p *Player) open(gen int, m *spotify.Media, v *spotify.Video) {
+func (p *Player) open(gen int, m *spotify.Media, v *spotify.Video, reason string) {
 	if v != nil && p.Video == nil && p.NewVideo != nil {
 		var err error
 		if p.Video, err = p.NewVideo(); err != nil {
@@ -1058,7 +1074,7 @@ func (p *Player) open(gen int, m *spotify.Media, v *spotify.Video) {
 			p.sync()
 			return
 		}
-		p.out = p.Web.Open(m)
+		p.out = p.Web.openAudio(m, reason)
 	}
 	// From its middle, as a session picked up again, it fades in.
 	level := 1.0
@@ -1089,7 +1105,6 @@ func (p *Player) open(gen int, m *spotify.Media, v *spotify.Video) {
 		p.pending = 0
 	}
 	if p.playing {
-		p.licence.started(time.Now())
 		p.out.Play()
 		p.fade.fade(1, fadeIn, nil)
 	}
@@ -1149,7 +1164,7 @@ func (p *Player) reopen() {
 	p.stop()
 	p.pending = from
 	if !p.video {
-		p.open(gen, m, nil)
+		p.open(gen, m, nil, "video-off")
 		return
 	}
 	p.loading = true
@@ -1166,7 +1181,7 @@ func (p *Player) reopen() {
 			} else if from > 0 {
 				p.pending = max(from+p.leadFor(v), 0)
 			}
-			p.open(gen, m, v)
+			p.open(gen, m, v, "video-on")
 		})
 	}()
 	p.sync()

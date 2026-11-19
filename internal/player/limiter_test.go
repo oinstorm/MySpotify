@@ -54,27 +54,30 @@ func TestGateForgetsAfterAQuietSpell(t *testing.T) {
 	}
 }
 
-// A track that plays long enough after a refusal puts the wait back to its
-// first step: a run of refusals is over once a licence has played for half a
-// minute.
-func TestGateLetsGoAfterPlaying(t *testing.T) {
+// One authorized track, even on repeat, does not erase a run of refusals.
+func TestGateKeepsBackoffAfterOneTrack(t *testing.T) {
 	var g licenceGate
-	now := time.Now()
-	g.refused(now, 0)
-	if g.fails != 1 {
-		t.Fatalf("fails %d after one refusal, want 1", g.fails)
+	now := time.Unix(1000, 0)
+	now = g.refused(now, 0)
+	for range 4 {
+		g.completed(now, 1)
 	}
-	g.started(now)
-	g.playedFor(now.Add(gateGood - time.Second))
-	if g.fails != 1 {
-		t.Fatalf("forgot the run before it played long enough: fails %d", g.fails)
+	if got := g.refused(now, 0).Sub(now); got != time.Minute {
+		t.Fatalf("after the next refusal waits %v, want 1m", got)
 	}
-	g.playedFor(now.Add(gateGood))
-	if g.fails != 0 {
-		t.Fatalf("fails %d after playing long enough, want 0", g.fails)
+}
+
+// Three newly authorized tracks that play through lower the backoff one step.
+func TestGateRecoversGradually(t *testing.T) {
+	var g licenceGate
+	now := time.Unix(1000, 0)
+	now = g.refused(now, 0)
+	now = g.refused(now, 0)
+	for gen := 1; gen <= 3; gen++ {
+		now = now.Add(4 * time.Minute)
+		g.completed(now, gen)
 	}
-	until := g.refused(now.Add(gateGood), 0)
-	if got := until.Sub(now.Add(gateGood)); got != 30*time.Second {
-		t.Fatalf("after playing waits %v, want 30s", got)
+	if got := g.refused(now, 0).Sub(now); got != time.Minute {
+		t.Fatalf("after playing waits %v, want 1m", got)
 	}
 }

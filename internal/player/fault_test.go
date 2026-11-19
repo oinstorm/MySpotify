@@ -3,6 +3,7 @@ package player
 import (
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -120,6 +121,62 @@ func TestThrottledPausedStays(t *testing.T) {
 	if p.Loading() || p.Playing() {
 		t.Fatalf("loading %v, playing %v after the wait, paused", p.Loading(), p.Playing())
 	}
+}
+
+// A selection during cooldown replaces the old retry without starting it early.
+func TestThrottledSelectionReplacesRetry(t *testing.T) {
+	ch, p, waits := licensed(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	})
+	fails(t, ch, p, "1")
+	p.Next()
+	if p.Current().ID != "2" || p.Loading() || len(*waits) != 2 {
+		t.Fatalf("selected track %s, loading %v, %d waits", p.Current().ID, p.Loading(), len(*waits))
+	}
+	(*waits)[0]()
+	next(t, ch)
+	if p.Loading() || p.Limiting() <= 0 {
+		t.Fatal("old retry opened the gate")
+	}
+	(*waits)[1]()
+	next(t, ch)
+	if p.Current().ID != "2" || !p.Loading() {
+		t.Fatalf("after wait: track %s, loading %v", p.Current().ID, p.Loading())
+	}
+	next(t, ch)
+}
+
+// Repeated refusals stop automatic retries but keep the selected track for a manual retry after cooling down.
+func TestThrottledStopsAutomaticRetries(t *testing.T) {
+	ch, p, waits := licensed(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	})
+	for i := 1; i <= 4; i++ {
+		fails(t, ch, p, strconv.Itoa(i))
+		if i == 4 {
+			break
+		}
+		if len(*waits) != i {
+			t.Fatalf("after refusal %d, got %d waits", i, len(*waits))
+		}
+		(*waits)[i-1]()
+		next(t, ch)
+		next(t, ch)
+	}
+	if p.Playing() || p.Current().ID != "1" || len(*waits) != 3 {
+		t.Fatalf("after fourth refusal: playing %v, track %s, %d waits", p.Playing(), p.Current().ID, len(*waits))
+	}
+	p.Next()
+	p.TogglePlay()
+	if p.Playing() || p.Loading() || p.Current().ID != "2" || len(*waits) != 3 {
+		t.Fatalf("during cooldown: playing %v, loading %v, track %s, %d waits", p.Playing(), p.Loading(), p.Current().ID, len(*waits))
+	}
+	p.licence.open()
+	p.TogglePlay()
+	if !p.Playing() || !p.Loading() || p.Current().ID != "2" {
+		t.Fatalf("manual resume: playing %v, loading %v, track %s", p.Playing(), p.Loading(), p.Current().ID)
+	}
+	next(t, ch)
 }
 
 // A licence refused stops at the track: the rest of the queue would be
