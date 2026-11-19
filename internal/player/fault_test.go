@@ -164,3 +164,24 @@ func TestLicenceRenewsIdentity(t *testing.T) {
 		t.Fatalf("answered %d, renewed %d times", code, renewed)
 	}
 }
+
+// While Spotify has the device wait, the playbar can count down what is
+// left, and nothing once the wait is over.
+func TestThrottledCountsDown(t *testing.T) {
+	ch, p, waits := licensed(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "7")
+		w.WriteHeader(http.StatusTooManyRequests)
+	})
+	fails(t, ch, p, "1")
+	for len(ch) > 0 {
+		next(t, ch)
+	}
+	if left := p.Limiting(); left <= 0 || left > 7*time.Second {
+		t.Fatalf("counting down %v, want up to 7s", left)
+	}
+	(*waits)[0]()
+	next(t, ch)
+	if left := p.Limiting(); left != 0 {
+		t.Fatalf("still counting down %v after the wait", left)
+	}
+}

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"math"
 	"time"
 
@@ -384,7 +385,16 @@ func (a *app) playerBar(c *ui.Context) {
 					case pl.Loading():
 						ui.Text(c, "正在缓冲…").FontSize(12).TextColor(p.muted).SingleLine()
 					case pl.Err() != "":
-						ui.Text(c, pl.Err()).FontSize(12).TextColor(p.accent).SingleLine()
+						msg := pl.Err()
+						if left := pl.Limiting(); left > 0 {
+							// Counting down what is left, once a second: a
+							// message that goes on saying the same reads as
+							// stuck, and asking again is what keeps Spotify
+							// turning it away.
+							msg = fmt.Sprintf("Spotify 限流，约 %.0f 秒后自动继续", math.Ceil(left.Seconds()))
+							c.After(time.Second)
+						}
+						ui.Text(c, msg).FontSize(12).TextColor(p.accent).SingleLine()
 					default:
 						a.artistLinks(c.Key("by"), tr.Artists, 12, p.muted, p.text)
 					}

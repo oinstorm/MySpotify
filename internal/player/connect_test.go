@@ -125,3 +125,23 @@ func TestConnectOptionsKeepShuffleAndRepeatApart(t *testing.T) {
 		t.Fatalf("shuffle %v with repeat %v", p.Shuffle(), p.Repeat())
 	}
 }
+
+// A phone sending the state it already sent does not seek again: a seek for
+// each would stutter what plays.
+func TestConnectSameStateDoesNotSeek(t *testing.T) {
+	p := New(func(func()) {})
+	track := spotify.Track{ID: "song", Name: "Song", Duration: 60000}
+	p.Cue([]spotify.Track{track})
+	out := &connectTestOutput{closed: make(chan struct{})}
+	p.out = out
+	p.fade.attach(out, 1)
+	p.playing = true
+	p.ApplyConnect(track, 1500*time.Millisecond, false)
+	if p.seeking {
+		t.Fatal("seeked where the state had not moved")
+	}
+	p.ApplyConnect(track, 30*time.Second, false)
+	if !p.seeking {
+		t.Fatal("did not go where the state moved to")
+	}
+}

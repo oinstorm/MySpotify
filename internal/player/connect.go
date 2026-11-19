@@ -92,7 +92,14 @@ func (p *Player) ApplyConnect(track spotify.Track, position time.Duration, pause
 	defer func() { p.Control = control }()
 	_, remote := p.out.(*remoteOutput)
 	if p.track != nil && p.track.URI() == track.URI() && !remote && (p.out != nil || p.loading) {
-		if position >= 0 {
+		// Where the phone's idea of it has not moved: apps send the same
+		// state over and over, and a seek for each would stutter what
+		// plays.
+		moved := position >= 0 && (position-p.Position() > 2*time.Second || p.Position()-position > 2*time.Second)
+		if !moved && p.playing != paused {
+			return
+		}
+		if moved {
 			p.Seek(position)
 		}
 		if p.playing == paused {

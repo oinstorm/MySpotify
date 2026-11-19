@@ -622,6 +622,10 @@ func (p *Player) Ready() bool { return p.out != nil }
 // Err returns why the current track did not play, or "".
 func (p *Player) Err() string { return p.err }
 
+// Limiting reports how long Spotify has the device wait before another
+// licence may be asked for, and nothing when it does not.
+func (p *Player) Limiting() time.Duration { return p.licence.left(time.Now()) }
+
 func (p *Player) Shuffle() bool      { return p.shuffle }
 func (p *Player) Repeat() RepeatMode { return p.repeat }
 
@@ -900,6 +904,11 @@ func (p *Player) Levels() ([Bands]float32, bool) {
 	return lv, true
 }
 
+// idleAfter is how long a paused page is kept before it is closed. One kept
+// asks Spotify for no licence when play comes back, which is worth the
+// module it holds: a licence asked for too often is turned away.
+const idleAfter = 20 * time.Minute
+
 func (p *Player) updateIdle() {
 	if p.Web == nil || p.playing || p.loading {
 		if p.idle != nil {
@@ -914,7 +923,7 @@ func (p *Player) updateIdle() {
 	}
 	p.idleGen++
 	gen := p.idleGen
-	p.idle = time.AfterFunc(5*time.Minute, func() {
+	p.idle = time.AfterFunc(idleAfter, func() {
 		p.post(func() { p.releaseIdle(gen) })
 	})
 }
