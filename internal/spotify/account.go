@@ -39,6 +39,7 @@ func AccountIdentity(cookies string) (Identity, error) {
 		return Identity{}, ErrStaleCookies
 	}
 	id := r.id
+	id.clientID = r.clientID
 	ct, err := clientToken(r.clientID)
 	if err != nil {
 		return Identity{}, fmt.Errorf("spotify: account token: %w", err)

@@ -86,6 +86,18 @@ func ConfigureClientTokens(device string, data []byte, save func([]byte) error) 
 
 func clientToken(clientID string) (string, error) { return clientTokens.get(clientID) }
 
+func withClientToken(id Identity) (Identity, error) {
+	if id.clientID == "" {
+		return id, nil
+	}
+	ct, err := clientToken(id.clientID)
+	if err != nil && !id.Anonymous {
+		return Identity{}, err
+	}
+	id.ClientToken = ct
+	return id, nil
+}
+
 func (c *clientTokenCache) get(clientID string) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -96,7 +108,6 @@ func (c *clientTokenCache) get(clientID string) (string, error) {
 	kept := c.tokens[clientID]
 	valid := kept.Token != "" && now.Before(kept.Expires)
 	if valid && now.Before(kept.Refresh) {
-		log.Print("clienttoken: reusing cached device credential")
 		return kept.Token, nil
 	}
 	if failure := c.failures[clientID]; now.Before(failure.until) {

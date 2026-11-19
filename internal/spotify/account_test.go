@@ -16,6 +16,7 @@ import (
 type tokenServer struct {
 	clientDown atomic.Bool
 	clientAsks atomic.Int32
+	accessAsks atomic.Int32
 }
 
 // testTokenServer swaps where the identity comes from for a server of the
@@ -28,6 +29,7 @@ func testTokenServer(t *testing.T, token func(w http.ResponseWriter, r *http.Req
 		case "/time":
 			json.NewEncoder(w).Encode(map[string]any{"serverTime": time.Now().Unix()})
 		case "/token":
+			ts.accessAsks.Add(1)
 			token(w, r)
 		case "/clienttoken":
 			ts.clientAsks.Add(1)
@@ -159,6 +161,57 @@ func TestAccountIdentityReusesDeviceToken(t *testing.T) {
 	}
 	if got := ts.clientAsks.Load(); got != 1 {
 		t.Fatalf("asked for a device credential %d times across renewals, want 1", got)
+	}
+}
+
+// A still-fresh access token must not keep sending a device credential after its independent deadline.
+func TestClientTokenRefreshesWithoutRenewingAccess(t *testing.T) {
+	ts := testTokenServer(t, theirs)
+	now := time.Unix(1700000000, 0)
+	clientTokens.now = func() time.Time { return now }
+	id, err := AccountIdentity("sp_dc=abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	SetIdentity(id)
+	now = now.Add(time.Hour)
+	got, err := CurrentIdentity()
+	if err != nil || got.Token != id.Token || got.Expires != id.Expires || ts.clientAsks.Load() != 2 || ts.accessAsks.Load() != 1 {
+		t.Fatalf("device refresh changed or renewed the access token: %v, device asks=%d, access asks=%d", err, ts.clientAsks.Load(), ts.accessAsks.Load())
+	}
+	ts.clientDown.Store(true)
+	now = now.Add(time.Hour)
+	if _, err := CurrentIdentity(); err != nil {
+		t.Fatalf("lost a still-valid device credential: %v", err)
+	}
+	now = now.Add(time.Hour)
+	if _, err := CurrentIdentity(); err == nil {
+		t.Fatal("fresh access token hid an expired device credential")
+	}
+}
+
+// Signed-out browsing can omit an expired device credential when refresh is unavailable.
+func TestClientTokenFailureKeepsAnonymousBrowsing(t *testing.T) {
+	ts := testTokenServer(t, func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"clientId": "x", "accessToken": "visitor", "isAnonymous": true,
+			"accessTokenExpirationTimestampMs": time.Now().Add(time.Hour).UnixMilli(),
+		})
+	})
+	now := time.Unix(1700000000, 0)
+	clientTokens.now = func() time.Time { return now }
+	id, err := AnonymousIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	guestMu.Lock()
+	guest = id
+	guestMu.Unlock()
+	ts.clientDown.Store(true)
+	now = now.Add(2 * time.Hour)
+	got, err := guestIdentity()
+	if err != nil || got.Token != "visitor" || got.ClientToken != "" {
+		t.Fatalf("anonymous browsing failed or kept an expired device credential: %v", err)
 	}
 }
 

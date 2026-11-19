@@ -22,6 +22,7 @@ func AnonymousIdentity() (Identity, error) {
 		return Identity{}, fmt.Errorf("spotify: anonymous token: %w", err)
 	}
 	id := r.id
+	id.clientID = r.clientID
 	if ct, err := clientToken(r.clientID); err == nil {
 		id.ClientToken = ct
 	}

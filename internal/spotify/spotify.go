@@ -52,6 +52,7 @@ type Identity struct {
 	ClientToken string
 	Expires     time.Time
 	Anonymous   bool
+	clientID    string
 }
 
 // ParseIdentity reads what CaptureJS noted (window.__vinyl, as JSON). It
@@ -59,6 +60,7 @@ type Identity struct {
 func ParseIdentity(s string) (Identity, bool) {
 	var v struct {
 		Token *struct {
+			ClientID    string `json:"clientId"`
 			AccessToken string `json:"accessToken"`
 			Expires     int64  `json:"accessTokenExpirationTimestampMs"`
 			Anonymous   bool   `json:"isAnonymous"`
@@ -73,6 +75,7 @@ func ParseIdentity(s string) (Identity, bool) {
 	switch {
 	case v.Token != nil && v.Token.AccessToken != "":
 		id.Token, id.Anonymous = v.Token.AccessToken, v.Token.Anonymous
+		id.clientID = v.Token.ClientID
 		id.Expires = time.UnixMilli(v.Token.Expires)
 	case v.Bearer != "":
 		// Seen on a request only: its lifetime unknown, an hour at most.
@@ -149,7 +152,7 @@ func guestIdentity() (Identity, error) {
 	guestMu.Lock()
 	if g := guest; g.Token != "" && time.Until(g.Expires) > 2*time.Minute {
 		guestMu.Unlock()
-		return g, nil
+		return withClientToken(g)
 	}
 	if RenewGuest == nil {
 		g := guest
@@ -175,14 +178,15 @@ func guestIdentity() (Identity, error) {
 	guestMu.Unlock()
 	<-wait
 	guestMu.Lock()
-	defer guestMu.Unlock()
-	if guestErr != nil {
-		return guest, guestErr
+	g, err := guest, guestErr
+	guestMu.Unlock()
+	if err != nil {
+		return g, err
 	}
-	if guest.Token == "" {
-		return guest, ErrSignedOut
+	if g.Token == "" {
+		return g, ErrSignedOut
 	}
-	return guest, nil
+	return withClientToken(g)
 }
 
 // SignOut forgets who was signed in and what browsing went as.
@@ -226,14 +230,14 @@ func identity(stale bool) (Identity, error) {
 	fresh := id.Token != "" && !id.Anonymous && (left > renewAhead || id.Token == held && left > heldUntil)
 	if fresh && !stale {
 		idMu.Unlock()
-		return id, nil
+		return withClientToken(id)
 	}
 	if Renew == nil {
 		idMu.Unlock()
 		if id.Token == "" || id.Anonymous {
 			return id, ErrSignedOut
 		}
-		return id, nil
+		return withClientToken(id)
 	}
 	// One renewal at a time; whoever else asks waits for it.
 	wait := renewing
@@ -257,14 +261,15 @@ func identity(stale bool) (Identity, error) {
 	idMu.Unlock()
 	<-wait
 	idMu.Lock()
-	defer idMu.Unlock()
-	if renewErr != nil {
-		return current, renewErr
+	id, err := current, renewErr
+	idMu.Unlock()
+	if err != nil {
+		return id, err
 	}
-	if current.Anonymous || current.Token == "" {
-		return current, ErrSignedOut
+	if id.Anonymous || id.Token == "" {
+		return id, ErrSignedOut
 	}
-	return current, nil
+	return withClientToken(id)
 }
 
 // do sends the request build makes as the web player, renewing the
