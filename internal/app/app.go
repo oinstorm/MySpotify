@@ -256,6 +256,9 @@ func Run() error {
 		spotify.LoadOps()
 	}
 	log.Printf("start, pid %d", os.Getpid())
+	if err := configureClientTokens(); err != nil {
+		log.Printf("clienttoken: restore device identity: %v", err)
+	}
 	// What decoding a page of covers takes goes back to the system after,
 	// rather than staying in the heap (20 MB).
 	if os.Getenv("GOMEMLIMIT") == "" {

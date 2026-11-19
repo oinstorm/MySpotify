@@ -35,15 +35,20 @@ func testTokenServer(t *testing.T, token func(w http.ResponseWriter, r *http.Req
 				http.Error(w, "no", http.StatusInternalServerError)
 				return
 			}
-			json.NewEncoder(w).Encode(map[string]any{"granted_token": map[string]any{"token": "device"}})
+			json.NewEncoder(w).Encode(map[string]any{"granted_token": map[string]any{
+				"token": "device", "expires_after_seconds": 7200, "refresh_after_seconds": 3600,
+			}})
 		default:
 			http.NotFound(w, r)
 		}
 	}))
 	oldToken, oldTime, oldClient := apiTokenURL, serverTimeURL, clientTokenURL
+	oldCache := clientTokens
+	clientTokens = newClientTokenCache()
 	apiTokenURL, serverTimeURL, clientTokenURL = srv.URL+"/token", srv.URL+"/time", srv.URL+"/clienttoken"
 	t.Cleanup(func() {
 		apiTokenURL, serverTimeURL, clientTokenURL = oldToken, oldTime, oldClient
+		clientTokens = oldCache
 		srv.Close()
 		SignOut()
 	})
@@ -118,20 +123,42 @@ func TestAccountIdentityTurnedDownIsNotStale(t *testing.T) {
 	}
 }
 
-// A client token that cannot be had this time keeps the one requests go
-// with now, which lasts a fortnight; with none to keep, the renewal fails,
-// rather than giving the listener an hour of spclient turning them down.
+// A failed refresh keeps a known-valid device credential but never an expired one.
 func TestAccountIdentityKeepsTheClientToken(t *testing.T) {
 	ts := testTokenServer(t, theirs)
+	now := time.Unix(1700000000, 0)
+	clientTokens.now = func() time.Time { return now }
+	if _, err := AccountIdentity("sp_dc=abc"); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Hour)
 	ts.clientDown.Store(true)
-	SetIdentity(Identity{Token: "before", ClientToken: "kept", Expires: time.Now().Add(time.Minute)})
 	id, err := AccountIdentity("sp_dc=abc")
-	if err != nil || id.Token != "theirs" || id.ClientToken != "kept" {
-		t.Fatalf("AccountIdentity = %+v, %v; want the new token with the client token kept", id, err)
+	if err != nil || id.Token != "theirs" || id.ClientToken != "device" {
+		t.Fatalf("AccountIdentity failed to keep the valid device credential: %v", err)
+	}
+	now = now.Add(time.Hour)
+	if _, err := AccountIdentity("sp_dc=abc"); err == nil {
+		t.Fatal("AccountIdentity reused an expired device credential")
+	}
+}
+
+// Access-token renewals and signing out do not recreate a still-valid device credential.
+func TestAccountIdentityReusesDeviceToken(t *testing.T) {
+	ts := testTokenServer(t, theirs)
+	for range 3 {
+		id, err := AccountIdentity("sp_dc=abc")
+		if err != nil || id.ClientToken != "device" {
+			t.Fatalf("AccountIdentity did not get the device credential: %v", err)
+		}
+		SetIdentity(id)
 	}
 	SignOut()
-	if id, err := AccountIdentity("sp_dc=abc"); err == nil {
-		t.Fatalf("AccountIdentity = %+v with no client token to go with it, want an error", id)
+	if _, err := AnonymousIdentity(); err != nil {
+		t.Fatal(err)
+	}
+	if got := ts.clientAsks.Load(); got != 1 {
+		t.Fatalf("asked for a device credential %d times across renewals, want 1", got)
 	}
 }
 

@@ -39,33 +39,12 @@ func AccountIdentity(cookies string) (Identity, error) {
 		return Identity{}, ErrStaleCookies
 	}
 	id := r.id
-	// spclient refuses a request without a client token, and what a listener
-	// does goes through it: playback, their library, Connect. The one the
-	// identity before had lasts a fortnight, so a failure to get a new one
-	// keeps it; with none to keep, the web view gets one with its token,
-	// rather than an hour of nothing playing.
 	ct, err := clientToken(r.clientID)
 	if err != nil {
-		if ct = lastClientToken(); ct == "" {
-			return Identity{}, fmt.Errorf("spotify: account token: %w", err)
-		}
+		return Identity{}, fmt.Errorf("spotify: account token: %w", err)
 	}
 	id.ClientToken = ct
 	return id, nil
-}
-
-// lastClientToken is the client token requests go with now, the listener's
-// or else the guest's: either is this device's, which is what it names.
-func lastClientToken() string {
-	idMu.Lock()
-	ct := current.ClientToken
-	idMu.Unlock()
-	if ct != "" {
-		return ct
-	}
-	guestMu.Lock()
-	defer guestMu.Unlock()
-	return guest.ClientToken
 }
 
 // tokenReply is what /api/token answered: the identity, without its client
