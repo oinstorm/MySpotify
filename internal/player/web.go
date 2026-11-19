@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net"
 	"net/http"
 	"regexp"
@@ -464,6 +465,10 @@ func (w *Web) forward(rw http.ResponseWriter, r *http.Request, method, target st
 			break
 		}
 		log.Printf("player: %s: 401, renewing the identity", r.URL.Path)
+		// Renewed in a moment, so the two licence requests do not land in
+		// the same burst: Spotify reads a renewed identity and an asking
+		// too soon after the first as a burst.
+		time.Sleep(1*time.Second + time.Duration(rand.Intn(1000))*time.Millisecond)
 	}
 	wait := spotify.RetryAfter(res.Header)
 	if res.StatusCode != http.StatusOK {

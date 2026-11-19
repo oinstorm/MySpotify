@@ -105,10 +105,11 @@ type Player struct {
 	skipped    int // the tracks skipped, as they could not play, before this one
 
 	// Spotify turned the track away for asking too often: it loads again
-	// once the wait is over, if it is to play then.
-	waiting   bool
-	throttles int // the times in a row, to wait longer each
-
+	// once the wait is over, if it is to play then. Until then no licence
+	// is asked at all (licenceGate): asking would only go on being turned
+	// away, as asking again at once keeps a run of refusals going.
+	waiting      bool
+	licence      licenceGate
 	lyrics       []lyrics.Line
 	lyricsLoaded bool
 	// ahead are the lyrics of the track after this one, fetched as this
@@ -234,7 +235,7 @@ func (p *Player) ended() {
 	if p.control("advance", nil) {
 		return
 	}
-	p.throttles = 0
+	p.licence.playedFor(time.Now())
 	if p.repeat == RepeatOne {
 		p.out.Seek(0)
 		p.out.Play()
@@ -271,32 +272,66 @@ func (p *Player) failed(licence int, wait time.Duration) {
 	}
 }
 
-// throttled waits as Spotify asked, wait, or longer each time if it did not
-// say, then loads the track again from where it was.
+// throttled waits until the licence gate lets go, as long as Spotify asked
+// or longer each time it did not say, then loads the track again from where
+// it was. Nothing else may ask for a licence meanwhile.
 func (p *Player) throttled(wait time.Duration) {
-	if wait <= 0 {
-		wait = 30 * time.Second << min(p.throttles, 4)
-	}
-	wait = min(wait, 30*time.Minute)
-	p.throttles++
+	until := p.licence.refused(time.Now(), wait)
+	d := time.Until(until)
 	from := p.Position()
 	p.stop()
 	p.pending, p.waiting = from, true
 	p.err = "Spotify 暂时限流，稍后重试"
-	log.Printf("player: throttled, again in %v", wait)
+	log.Printf("player: throttled, again in %v", d)
 	gen := p.gen
-	afterFunc(wait, func() {
+	afterFunc(d, func() {
 		p.post(func() {
 			if gen != p.gen || !p.waiting {
 				return
 			}
 			p.waiting = false
+			p.licence.open()
+			log.Printf("player: throttled, asking again")
 			if p.playing {
 				p.loadSkipping(p.at, p.skipped, true, p.pending)
 			}
 		})
 	})
 	p.sync()
+}
+
+// gated holds back a load while the licence gate is shut: asking now would
+// only go on being turned away. It loads the track at order[at] once the
+// gate opens, if it is still to play then.
+func (p *Player) gated(at, skipped int, play bool, from time.Duration) bool {
+	now := time.Now()
+	if !p.licence.shut(now) {
+		return false
+	}
+	if p.waiting {
+		// A wait is already running for it: one more would double it.
+		return true
+	}
+	p.pending, p.waiting = from, true
+	p.err = "Spotify 暂时限流，稍后重试"
+	d := p.licence.left(now)
+	log.Printf("player: throttled, waiting %v before asking again", d)
+	gen := p.gen
+	afterFunc(d, func() {
+		p.post(func() {
+			if gen != p.gen || !p.waiting {
+				return
+			}
+			p.waiting = false
+			p.licence.open()
+			log.Printf("player: throttled, asking again")
+			if p.playing {
+				p.loadSkipping(at, skipped, play, p.pending)
+			}
+		})
+	})
+	p.sync()
+	return true
 }
 
 // afterFunc runs fn after d, on a goroutine; tests run it when they like.
@@ -569,7 +604,6 @@ func (p *Player) setModes(shuffle bool, repeat RepeatMode) {
 	})
 }
 
-
 // Current returns the track playing or loading, or nil.
 func (p *Player) Current() *spotify.Track { return p.track }
 
@@ -758,6 +792,7 @@ func (p *Player) SetVolume(v float64) {
 	p.volume = v
 	p.applyGain()
 }
+
 // applyGain sets the volume of what plays: the listener's, which the ear
 // hears in powers.
 func (p *Player) applyGain() {
@@ -927,6 +962,9 @@ func (p *Player) load(at int) {
 // loadSkipping loads the track at order[at], to play or not, from from,
 // skipping those that cannot play: skipped of them so far.
 func (p *Player) loadSkipping(at, skipped int, play bool, from time.Duration) {
+	if p.gated(at, skipped, play, from) {
+		return
+	}
 	gen, t := p.cue(at, play, from)
 	p.loading, p.skipped = true, skipped
 	p.updateIdle()
@@ -1042,6 +1080,7 @@ func (p *Player) open(gen int, m *spotify.Media, v *spotify.Video) {
 		p.pending = 0
 	}
 	if p.playing {
+		p.licence.started(time.Now())
 		p.out.Play()
 		p.fade.fade(1, fadeIn, nil)
 	}
