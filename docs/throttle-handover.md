@@ -6,6 +6,16 @@
 - `/cert` 日志用 `source=upstream` 标明实际上游尝试，用 `source=cache` 标明本地命中；按 `track` 和 `reason` 与原 `/license` 日志对照。日志不包含证书、令牌、请求体或响应体。轨道编号在播放页重建后可能从头计数。
 - 诊断版日志还输出 `page` 实例编号、缓存未命中原因、缓存决定、有效期及响应的 `Cache-Control`、`Vary`、`Age`、`Expires` 元数据；这能区分上游禁止缓存与播放页重建。不得输出证书本体或身份信息。
 - 新增回归检查默认及显式 HTTP 缓存期限、`no-store`/`no-cache`/`Vary`/`Age`/`Expires` 的诊断原因、缓存命中不泄漏证书字节，以及播放页实例隔离。Windows 云构建前增加 Linux Go race detector 重复运行证书缓存用例。
+
+### 代码核验构建（2026-11-20 22:07）
+
+- 当前代码提交：`2ef808d860cbb46a87144d979c4ce187c11df700`；云构建 `44749585967` 成功，Linux race 检查、Windows 测试和构建均成功。
+- 新构建首次上游响应日志会带：`page`、`track`、`reason`、`attempt`、本地 `status`、上游 `upstream_status`、`miss`、`cache`、`ttl` 与缓存策略相关响应头。
+- cache miss 分类包括空缓存、缓存过期、目标变化、身份/传输/响应错误、`no-store`/`no-cache`、无效有效期以及具体 `Vary` 字段。
+- 新 EXE：`build/certificate-diagnostics-2ef808d/MySpotify.exe`；SHA-256：`801B2B1DAF129CAF5B1E903E4C9B3A559BE7D8A93558A4315E488F2DB6994B17`；已验证内嵌修订号和 SHA-256，未启动。
+- 本地 `go test ./internal/...`、证书专项 `-count=5`、`go vet ./...`、`go tool mygo vet .` 和播放页 Node 测试通过。本机缺 GCC，未能运行本地 Go race detector；Linux 云端 `go test -race -count=5 ./internal/player -run '^TestCertificate'` 成功。
+
+本次是诊断构建，不改变缓存规则或限流/重试策略。安装并完全退出旧版后，正常顺序播放几首，查看每个 `page` 的首条 `/cert` 上游日志中的 `cache=` 与 `cache_control` / `vary` / `age` / `expires`，即可确认缓存为何未命中，以及是否由播放页重建造成。
 - Windows 的 Hls 路径原本每次新建播放对象，历史日志未统计成功的 `/cert`，所以不能用旧日志证明固定的每曲证书请求数。macOS 的原生 FairPlay 页面原有证书复用逻辑，保持不变。
 - 用正常连播验收：统计 `/cert` 的上游尝试和缓存命中，以及自然换曲的 `/license` 200/429。预期减少 `/cert` 的上游次数，不预设证书与授权共享限额。不调整歌曲授权、退避、播放对象复用或界面行为。
 
