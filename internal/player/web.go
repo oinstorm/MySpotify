@@ -51,6 +51,7 @@ type Web struct {
 	outs map[int]*webOut
 	// heads are the starts of files fetched ahead of playing (Prefetch).
 	heads []*head
+	cert  certificateCache
 
 	// Cache, if set, keeps the parts of tracks the page asks for.
 	Cache *Cache
@@ -330,9 +331,11 @@ func (w *Web) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 		if o.license != "" {
 			target = licenseOrigin + o.license
 		}
-		w.forward(rw, r, http.MethodPost, target)
-	case p == "/cert":
-		w.forward(rw, r, http.MethodGet, licenseHost+"/application-certificate")
+		reply := w.forward(r, o, target)
+		reply.header = nil
+		reply.write(rw)
+	case p == "/cert" && r.Method == http.MethodGet:
+		w.serveCertificate(rw, r)
 
 	case p == "/event" && r.Method == http.MethodPost:
 		var e struct {
@@ -422,22 +425,42 @@ func (w *Web) serveMedia(rw http.ResponseWriter, r *http.Request, rest string) {
 // License) is; tests swap it for their own.
 var licenseOrigin = "https://spclient.wg.spotify.com"
 
-// forward sends the key system's request to Spotify's licence
-// service, as the web player: once more, renewed, if the service turned
-// the identity down. The track it is for, gen in the query, notes the
-// answer.
-func (w *Web) forward(rw http.ResponseWriter, r *http.Request, method, target string) {
+type drmReply struct {
+	status int
+	header http.Header
+	body   []byte
+}
+
+func (res drmReply) write(w http.ResponseWriter) {
+	for _, name := range []string{"Content-Type", "Retry-After"} {
+		if v := res.header.Get(name); v != "" {
+			w.Header().Set(name, v)
+		}
+	}
+	w.WriteHeader(res.status)
+	w.Write(res.body)
+}
+
+func drmLoadReason(o *webOut) string {
+	if o == nil || o.reason == "" {
+		return "unknown"
+	}
+	return o.reason
+}
+
+// forward sends a DRM request, renewing the identity once after a 401.
+func (w *Web) forward(r *http.Request, o *webOut, target string) drmReply {
+	cert := r.Method == http.MethodGet
 	var body []byte
-	if method == http.MethodPost {
+	if !cert {
 		b, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 		if err != nil {
-			http.Error(rw, err.Error(), http.StatusBadRequest)
-			return
+			return drmReply{status: http.StatusBadRequest, body: []byte(err.Error())}
 		}
 		body = b
 	}
 	gen, _ := strconv.Atoi(r.URL.Query().Get("gen"))
-	o := w.out(gen)
+	reason := drmLoadReason(o)
 	var res *http.Response
 	var out []byte
 	for attempt := 0; ; attempt++ {
@@ -446,31 +469,64 @@ func (w *Web) forward(rw http.ResponseWriter, r *http.Request, method, target st
 			id, err = spotify.RenewedIdentity()
 		}
 		if err != nil {
-			log.Printf("player: %s: %v", r.URL.Path, err)
+			if cert {
+				log.Printf("player: /cert track=%d reason=%s source=local status=identity-error", gen, reason)
+			} else {
+				log.Printf("player: %s: %v", r.URL.Path, err)
+			}
 			o.answered(http.StatusUnauthorized, 0)
-			http.Error(rw, err.Error(), http.StatusUnauthorized)
-			return
+			if cert {
+				return drmReply{status: http.StatusUnauthorized}
+			}
+			return drmReply{status: http.StatusUnauthorized, body: []byte(err.Error())}
 		}
-		req, _ := http.NewRequestWithContext(r.Context(), method, target, bytes.NewReader(body))
+		req, err := http.NewRequestWithContext(r.Context(), r.Method, target, bytes.NewReader(body))
+		if err != nil {
+			return drmReply{status: http.StatusBadGateway}
+		}
 		req.Header.Set("client-token", id.ClientToken)
 		req.Header.Set("User-Agent", spotify.UserAgent)
 		req.Header.Set("Referer", "https://open.spotify.com/")
-		if method == http.MethodPost {
+		if !cert {
 			req.Header.Set("Authorization", "Bearer "+id.Token)
 			req.Header.Set("Content-Type", "application/octet-stream")
 		}
 		if res, err = spotify.Client.Do(req); err != nil {
-			if method == http.MethodPost && o != nil {
+			if cert {
+				log.Printf("player: /cert track=%d reason=%s source=upstream attempt=%d status=%s", gen, reason, attempt+1, certificateTransportError(err))
+			} else if o != nil {
 				log.Printf("player: /license track=%d reason=%s attempt=%d status=transport-error", gen, o.reason, attempt+1)
 			}
-			http.Error(rw, err.Error(), http.StatusBadGateway)
-			return
+			if cert {
+				return drmReply{status: http.StatusBadGateway}
+			}
+			return drmReply{status: http.StatusBadGateway, body: []byte(err.Error())}
 		}
-		if method == http.MethodPost && o != nil {
+		if cert {
+			out, err = io.ReadAll(io.LimitReader(res.Body, maxCertificateBytes+1))
+			res.Body.Close()
+			failure := ""
+			switch {
+			case err != nil:
+				failure = certificateTransportError(err)
+			case res.StatusCode == http.StatusOK && !usableCertificate(out, res.Header.Get("Content-Type")):
+				failure = "invalid-body"
+			}
+			if failure != "" && res.StatusCode == http.StatusOK {
+				log.Printf("player: /cert track=%d reason=%s source=upstream attempt=%d status=%d error=%s", gen, reason, attempt+1, res.StatusCode, failure)
+				return drmReply{status: http.StatusBadGateway}
+			}
+			log.Printf("player: /cert track=%d reason=%s source=upstream attempt=%d status=%d", gen, reason, attempt+1, res.StatusCode)
+			if failure != "" || len(out) > maxCertificateBytes {
+				out = nil
+			}
+		} else {
+			out, _ = io.ReadAll(res.Body)
+			res.Body.Close()
+		}
+		if !cert && o != nil {
 			log.Printf("player: /license track=%d reason=%s attempt=%d status=%d", gen, o.reason, attempt+1, res.StatusCode)
 		}
-		out, _ = io.ReadAll(res.Body)
-		res.Body.Close()
 		if res.StatusCode != http.StatusUnauthorized || attempt > 0 {
 			break
 		}
@@ -484,9 +540,10 @@ func (w *Web) forward(rw http.ResponseWriter, r *http.Request, method, target st
 	if res.StatusCode != http.StatusOK {
 		log.Printf("player: %s: %s, retry after %v", r.URL.Path, res.Status, wait)
 	}
-	o.answered(res.StatusCode, wait)
-	rw.WriteHeader(res.StatusCode)
-	rw.Write(out)
+	if !cert || res.StatusCode != http.StatusOK {
+		o.answered(res.StatusCode, wait)
+	}
+	return drmReply{status: res.StatusCode, header: res.Header, body: out}
 }
 
 // webOut is one track in the page, which reports where it is a few times

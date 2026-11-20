@@ -1,8 +1,15 @@
 package spotify
 
-import "testing"
+import (
+	"os"
+	"testing"
+)
 
+// Guest browsing can load the public home feed without a listener's account.
 func TestLiveGuestHome(t *testing.T) {
+	if os.Getenv("LIVE") == "" {
+		t.Skip("LIVE not set")
+	}
 	SetIdentity(Identity{})
 	SignOut()
 	RenewGuest = AnonymousIdentity
