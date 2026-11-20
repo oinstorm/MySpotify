@@ -3,6 +3,7 @@ package player
 import (
 	"bytes"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -18,6 +19,23 @@ func certificateRequest(w *Web, gen int) *httptest.ResponseRecorder {
 	reply := httptest.NewRecorder()
 	w.ServeHTTP(reply, r)
 	return reply
+}
+
+// Recreating the player web page receives a new diagnostic identity for cache lifetime analysis.
+func TestCertificatePageIdentityChangesOnRecreation(t *testing.T) {
+	first, err := listen()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	second, err := listen()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	if first.id == 0 || second.id == 0 || first.id == second.id {
+		t.Fatalf("page IDs %d and %d do not distinguish web page instances", first.id, second.id)
+	}
 }
 
 // Switching tracks reuses the application certificate, but each licence still goes upstream.
@@ -173,26 +191,80 @@ func TestCertificateHonorsFreshnessHeaders(t *testing.T) {
 	for _, tc := range []struct {
 		control, vary, age, expires string
 		want                        time.Duration
+		policy                      string
 	}{
-		{want: 24 * time.Hour},
-		{control: "private, max-age=60", age: "10", want: 50 * time.Second},
-		{control: "max-age=60", age: "61", want: -time.Second},
-		{control: "max-age=1000000", want: 24 * time.Hour},
-		{control: "max-age=0"},
-		{control: "max-age=60, no-store"},
-		{control: "no-cache"},
-		{vary: "client-token"},
-		{vary: "Accept-Encoding", want: 24 * time.Hour},
-		{expires: now.Add(time.Minute).Format(http.TimeFormat), want: time.Minute},
-		{expires: now.Add(-time.Minute).Format(http.TimeFormat)},
+		{want: 24 * time.Hour, policy: "default-24h"},
+		{control: "private, max-age=60", age: "10", want: 50 * time.Second, policy: "max-age"},
+		{control: "max-age=60", age: "61", policy: "expired-max-age"},
+		{control: "max-age=1000000", want: 24 * time.Hour, policy: "max-age"},
+		{control: "max-age=0", policy: "duplicate-or-zero-max-age"},
+		{control: "max-age=60, no-store", policy: "no-store"},
+		{control: "no-cache", policy: "no-cache"},
+		{vary: "client-token", policy: "vary-client-token"},
+		{vary: "Accept-Encoding", want: 24 * time.Hour, policy: "default-24h"},
+		{expires: now.Add(time.Minute).Format(http.TimeFormat), want: time.Minute, policy: "expires"},
+		{expires: now.Add(-time.Minute).Format(http.TimeFormat), policy: "invalid-or-expired-expires"},
 	} {
 		h := make(http.Header)
 		h.Set("Cache-Control", tc.control)
 		h.Set("Vary", tc.vary)
 		h.Set("Age", tc.age)
 		h.Set("Expires", tc.expires)
-		if got := certificateLifetime(h, now); got != tc.want {
-			t.Errorf("headers %v gave %v, want %v", h, got, tc.want)
+		if got, policy := certificateLifetime(h, now); got != tc.want || policy != tc.policy {
+			t.Errorf("headers %v gave %v (%s), want %v (%s)", h, got, policy, tc.want, tc.policy)
 		}
+	}
+}
+
+// Certificate diagnostics identify a cache skip and a hit without logging certificate bytes.
+func TestCertificateDiagnostics(t *testing.T) {
+	var output bytes.Buffer
+	oldLog := log.Writer()
+	log.SetOutput(&output)
+	t.Cleanup(func() { log.SetOutput(oldLog) })
+	var asks atomic.Int32
+	_, p, _ := licensed(t, func(w http.ResponseWriter, r *http.Request) {
+		asks.Add(1)
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Write([]byte{0x30, 0x02, 0x00, 0x01})
+	})
+
+	if reply := certificateRequest(p.Web, 1); reply.Code != http.StatusOK {
+		t.Fatalf("upstream certificate returned %d", reply.Code)
+	}
+	if reply := certificateRequest(p.Web, 2); reply.Code != http.StatusOK {
+		t.Fatalf("cached certificate returned %d", reply.Code)
+	}
+	if asks.Load() != 1 {
+		t.Fatalf("certificate fetched upstream %d times, want 1", asks.Load())
+	}
+	got := output.String()
+	if !strings.Contains(got, "source=upstream") || !strings.Contains(got, "cache=stored-default-24h") || !strings.Contains(got, "source=cache") || !strings.Contains(got, "ttl=24h0m0s") {
+		t.Fatalf("certificate cache decisions were not logged: %s", got)
+	}
+	if strings.Contains(got, string([]byte{0x30, 0x02, 0x00, 0x01})) {
+		t.Fatal("logged certificate bytes")
+	}
+}
+
+// A server-declared no-store response is diagnosed precisely and isn't reused.
+func TestCertificateNoStoreDiagnostic(t *testing.T) {
+	var output bytes.Buffer
+	oldLog := log.Writer()
+	log.SetOutput(&output)
+	t.Cleanup(func() { log.SetOutput(oldLog) })
+	var asks atomic.Int32
+	_, p, _ := licensed(t, func(w http.ResponseWriter, r *http.Request) {
+		asks.Add(1)
+		w.Header().Set("Cache-Control", "no-store")
+		w.Write([]byte{0x30, 0x02, 0x00, 0x01})
+	})
+	for range 2 {
+		if reply := certificateRequest(p.Web, 1); reply.Code != http.StatusOK {
+			t.Fatalf("uncacheable certificate returned %d", reply.Code)
+		}
+	}
+	if asks.Load() != 2 || !strings.Contains(output.String(), "cache=no-store ttl=0s cache_control=\"no-store\"") {
+		t.Fatalf("no-store response was not diagnosed: requests=%d log=%s", asks.Load(), output.String())
 	}
 }

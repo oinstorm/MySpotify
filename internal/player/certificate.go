@@ -39,12 +39,21 @@ func (w *Web) serveCertificate(rw http.ResponseWriter, r *http.Request) {
 			return
 		}
 		c.mu.Lock()
-		if c.target == target && time.Now().Before(c.expires) {
+		now := time.Now()
+		if c.target == target && now.Before(c.expires) {
 			reply := c.reply
+			ttl := time.Until(c.expires).Round(time.Second)
 			c.mu.Unlock()
-			log.Printf("player: /cert track=%d reason=%s source=cache status=200", gen, drmLoadReason(o))
+			log.Printf("player: /cert page=%d track=%d reason=%s source=cache status=200 ttl=%s", w.id, gen, drmLoadReason(o), ttl)
 			reply.write(rw)
 			return
+		}
+		miss := "empty"
+		switch {
+		case c.target != "" && c.target != target:
+			miss = "target-changed"
+		case c.target == target && !c.expires.IsZero() && !now.Before(c.expires):
+			miss = "expired"
 		}
 		if loading := c.loading; loading != nil {
 			c.mu.Unlock()
@@ -61,32 +70,46 @@ func (w *Web) serveCertificate(rw http.ResponseWriter, r *http.Request) {
 		reply := w.forward(r, o, target)
 		c.mu.Lock()
 		c.target, c.reply, c.expires = "", drmReply{}, time.Time{}
-		if reply.status == http.StatusOK {
+		cacheDecision := reply.cacheReason
+		if reply.status == http.StatusOK && reply.upstreamStatus == http.StatusOK {
 			now := time.Now()
-			if ttl := certificateLifetime(reply.header, now); ttl > 0 {
+			ttl, policy := certificateLifetime(reply.header, now)
+			cacheDecision = policy
+			if ttl > 0 {
 				c.target, c.reply, c.expires = target, reply, now.Add(ttl)
+				cacheDecision = "stored-" + policy
 			}
+		} else if cacheDecision == "" {
+			cacheDecision = "status-" + strconv.Itoa(reply.upstreamStatus)
+		}
+		ttl := time.Duration(0)
+		if c.target == target {
+			ttl = time.Until(c.expires).Round(time.Second)
 		}
 		close(c.loading)
 		c.loading = nil
 		c.mu.Unlock()
+		log.Printf("player: /cert page=%d track=%d reason=%s source=upstream attempt=%d status=%d upstream_status=%d miss=%s cache=%s ttl=%s cache_control=%q vary=%q age=%q expires=%q", w.id, gen, drmLoadReason(o), reply.attempt, reply.status, reply.upstreamStatus, miss, cacheDecision, ttl, certificatePolicyHeader(reply.header, "Cache-Control"), certificatePolicyHeader(reply.header, "Vary"), certificatePolicyHeader(reply.header, "Age"), certificatePolicyHeader(reply.header, "Expires"))
 		reply.write(rw)
 		return
 	}
 }
 
-func certificateLifetime(h http.Header, now time.Time) time.Duration {
+func certificateLifetime(h http.Header, now time.Time) (time.Duration, string) {
 	ttl := maxCertificateAge
 	maxAge := false
 	for _, directive := range strings.Split(strings.Join(h.Values("Cache-Control"), ","), ",") {
 		name, value, _ := strings.Cut(strings.TrimSpace(directive), "=")
 		switch strings.ToLower(strings.TrimSpace(name)) {
 		case "no-store", "no-cache":
-			return 0
+			return 0, strings.ToLower(strings.TrimSpace(name))
 		case "max-age":
 			seconds, err := strconv.ParseInt(strings.Trim(strings.TrimSpace(value), `"`), 10, 64)
 			if maxAge || err != nil || seconds <= 0 {
-				return 0
+				if err != nil {
+					return 0, "invalid-max-age"
+				}
+				return 0, "duplicate-or-zero-max-age"
 			}
 			maxAge = true
 			ttl = min(ttl, time.Duration(min(seconds, int64(maxCertificateAge/time.Second)))*time.Second)
@@ -94,14 +117,14 @@ func certificateLifetime(h http.Header, now time.Time) time.Duration {
 	}
 	for _, field := range strings.Split(strings.Join(h.Values("Vary"), ","), ",") {
 		if field = strings.TrimSpace(field); field != "" && !strings.EqualFold(field, "Accept-Encoding") {
-			return 0
+			return 0, "vary-" + strings.ToLower(field)
 		}
 	}
 	age := time.Duration(0)
 	if value := h.Get("Age"); value != "" {
 		seconds, err := strconv.ParseInt(value, 10, 64)
 		if err != nil || seconds < 0 || seconds >= int64(maxCertificateAge/time.Second) {
-			return 0
+			return 0, "invalid-or-expired-age"
 		}
 		age = time.Duration(seconds) * time.Second
 	}
@@ -112,11 +135,30 @@ func certificateLifetime(h http.Header, now time.Time) time.Duration {
 	} else if value := h.Get("Expires"); value != "" {
 		until, err := http.ParseTime(value)
 		if err != nil || !now.Before(until) {
-			return 0
+			return 0, "invalid-or-expired-expires"
 		}
-		return min(ttl-age, until.Sub(now))
+		ttl = min(ttl-age, until.Sub(now))
+		if ttl <= 0 {
+			return 0, "expired-expires"
+		}
+		return ttl, "expires"
 	}
-	return ttl - age
+	ttl -= age
+	if ttl <= 0 {
+		return 0, "expired-max-age"
+	}
+	if maxAge {
+		return ttl, "max-age"
+	}
+	return ttl, "default-24h"
+}
+
+func certificatePolicyHeader(h http.Header, name string) string {
+	v := strings.Join(h.Values(name), ",")
+	if len(v) > 160 {
+		return v[:160]
+	}
+	return v
 }
 
 func usableCertificate(body []byte, contentType string) bool {

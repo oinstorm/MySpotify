@@ -24,6 +24,10 @@ jobs:
         env:
           CGO_ENABLED: "1"
         run: go test -race -count=5 ./internal/spotify -run '^(TestClientToken|TestAccountIdentity)'
+      - name: Certificate cache race tests
+        env:
+          CGO_ENABLED: "1"
+        run: go test -race -count=5 ./internal/player -run '^TestCertificate'
   test-and-build:
     needs: device-identity-audit
     runs-on: windows-latest
