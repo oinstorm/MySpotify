@@ -134,6 +134,37 @@ func TestVideoThatFailsGivesWayToTheSong(t *testing.T) {
 	}
 }
 
+// A video licence refusal used to start loading audio immediately, before the cooldown; a real retry must still play.
+func TestLicenceVideoRefusalUsesSharedCooldown(t *testing.T) {
+	var asked int
+	ch, p, _ := videoPlayer(t, func(w http.ResponseWriter, r *http.Request) {
+		asked++
+		if asked == 1 {
+			w.Header().Set("Retry-After", "120")
+			w.WriteHeader(http.StatusTooManyRequests)
+		}
+	})
+	var timers []func()
+	oldAfter := afterFunc
+	afterFunc = func(_ time.Duration, fn func()) { timers = append(timers, fn) }
+	t.Cleanup(func() { afterFunc = oldAfter })
+	p.SetVideo(true)
+	until(t, ch, p.ShowsVideo)
+	if r := ask(p.Video, http.MethodPost, "/license?gen=1", "video"); r.Code != 429 {
+		t.Fatal(r.Code)
+	}
+	ask(p.Video, http.MethodPost, "/event", `{"gen":1,"type":"error","msg":"keySystemLicenseRequestFailed"}`)
+	next(t, ch)
+	if p.out != nil || !p.waiting || !p.VideoOn() || len(timers) != 1 || asked != 1 {
+		t.Fatal("video refusal started an audio fallback or failed to wait")
+	}
+	timers[0]()
+	until(t, ch, p.ShowsVideo)
+	if r := ask(p.Video, http.MethodPost, "/license?gen=2", "retry"); r.Code != 200 || asked != 2 {
+		t.Fatalf("retry: HTTP %d, %d upstream requests", r.Code, asked)
+	}
+}
+
 // The video's page gets its playlists, their segments pointed at the
 // server, and its licence comes from where the manifest says, not where a
 // song's does.

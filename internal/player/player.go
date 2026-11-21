@@ -224,6 +224,10 @@ func (p *Player) ended() {
 		Fault() (string, int, time.Duration)
 	}); ok {
 		if msg, licence, wait := f.Fault(); msg != "" {
+			if out, ok := p.out.(*webOut); ok && licence == http.StatusTooManyRequests && out.licenceRefused() {
+				p.holdLicence(p.licence.deadline())
+				return
+			}
 			if p.showsVideo {
 				p.videoFailed(msg)
 				return
@@ -277,7 +281,10 @@ func (p *Player) failed(licence int, wait time.Duration) {
 // or longer each time it did not say, then loads the track again from where
 // it was. Nothing else may ask for a licence meanwhile.
 func (p *Player) throttled(wait time.Duration) {
-	until := p.licence.refused(time.Now(), wait)
+	p.holdLicence(p.licence.refused(time.Now(), wait))
+}
+
+func (p *Player) holdLicence(until time.Time) {
 	from := p.Position()
 	p.stop()
 	p.pending = from
@@ -286,7 +293,7 @@ func (p *Player) throttled(wait time.Duration) {
 		p.pauseForLicence()
 	} else {
 		log.Printf("player: throttled, again in %v", time.Until(until))
-		p.waitForLicence(time.Until(until))
+		p.waitForLicence(until)
 	}
 	p.sync()
 }
@@ -296,17 +303,17 @@ func (p *Player) pauseForLicence() {
 	p.err = "Spotify 限流，点击播放重试"
 }
 
-func (p *Player) waitForLicence(d time.Duration) {
+func (p *Player) waitForLicence(until time.Time) {
 	p.waiting = true
 	p.err = "Spotify 暂时限流，稍后重试"
 	gen := p.gen
-	afterFunc(d, func() {
+	afterFunc(time.Until(until), func() {
 		p.post(func() {
 			if gen != p.gen || !p.waiting {
 				return
 			}
 			p.waiting = false
-			p.licence.open()
+			p.licence.open(until)
 			if p.playing {
 				log.Printf("player: throttled, asking again")
 				p.loadFor(p.at, p.skipped, true, p.pending, "throttle-retry")
@@ -333,7 +340,7 @@ func (p *Player) gated(at, skipped int, play bool, from time.Duration) bool {
 	} else {
 		d := p.licence.left(now)
 		log.Printf("player: throttled, waiting %v before asking again", d)
-		p.waitForLicence(d)
+		p.waitForLicence(p.licence.deadline())
 	}
 	p.sync()
 	return true
@@ -964,6 +971,9 @@ func (p *Player) CloseWeb() {
 
 func (p *Player) stop() {
 	if out := p.out; out != nil {
+		if web, ok := out.(*webOut); ok {
+			web.retired.Store(true)
+		}
 		// Paused first, it fades out over a few milliseconds, rather than
 		// stopping with a click.
 		out.Pause()
@@ -1060,7 +1070,7 @@ func (p *Player) open(gen int, m *spotify.Media, v *spotify.Video, reason string
 	}
 	p.lead = 0
 	if v != nil && p.Video != nil {
-		p.out, p.showsVideo = p.Video.OpenVideo(v), true
+		p.out, p.showsVideo = p.Video.openVideo(v, &p.licence), true
 		p.lead = leadGuess(p.track, v)
 	} else {
 		if p.Web == nil && p.NewWeb != nil {
@@ -1074,7 +1084,7 @@ func (p *Player) open(gen int, m *spotify.Media, v *spotify.Video, reason string
 			p.sync()
 			return
 		}
-		p.out = p.Web.openAudio(m, reason)
+		p.out = p.Web.openAudio(m, reason, &p.licence)
 	}
 	// From its middle, as a session picked up again, it fades in.
 	level := 1.0
@@ -1083,9 +1093,10 @@ func (p *Player) open(gen int, m *spotify.Media, v *spotify.Video, reason string
 	}
 	p.fade.attach(p.out, level)
 	p.applyGain()
+	opened := p.out
 	p.out.OnEnd(func() {
 		p.post(func() {
-			if gen == p.gen {
+			if gen == p.gen && p.out == opened {
 				p.ended()
 			}
 		})

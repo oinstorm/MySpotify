@@ -5,6 +5,8 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -171,7 +173,7 @@ func TestThrottledStopsAutomaticRetries(t *testing.T) {
 	if p.Playing() || p.Loading() || p.Current().ID != "2" || len(*waits) != 3 {
 		t.Fatalf("during cooldown: playing %v, loading %v, track %s, %d waits", p.Playing(), p.Loading(), p.Current().ID, len(*waits))
 	}
-	p.licence.open()
+	p.licence.open(p.licence.deadline())
 	p.TogglePlay()
 	if !p.Playing() || !p.Loading() || p.Current().ID != "2" {
 		t.Fatalf("manual resume: playing %v, loading %v, track %s", p.Playing(), p.Loading(), p.Current().ID)
@@ -241,4 +243,74 @@ func TestThrottledCountsDown(t *testing.T) {
 	if left := p.Limiting(); left != 0 {
 		t.Fatalf("still counting down %v after the wait", left)
 	}
+}
+
+// Concurrent challenges after the first refusal used to go upstream until the page reported its error.
+func TestLicenceRefusalBlocksBeforePageEvent(t *testing.T) {
+	var asked atomic.Int32
+	ch, p, waits := licensed(t, func(w http.ResponseWriter, r *http.Request) {
+		asked.Add(1)
+		w.Header().Set("Retry-After", "7")
+		w.WriteHeader(http.StatusTooManyRequests)
+	})
+	var wg sync.WaitGroup
+	for i := range 8 {
+		wg.Go(func() {
+			if code := page(p, http.MethodPost, "/license?gen=1", strconv.Itoa(i)); code != 429 {
+				t.Errorf("got %d, want 429", code)
+			}
+		})
+	}
+	wg.Wait()
+	if asked.Load() != 1 {
+		t.Fatalf("%d upstream attempts before the page reported the refusal, want 1", asked.Load())
+	}
+	page(p, http.MethodPost, "/event", `{"gen":1,"type":"error","msg":"keySystemLicenseRequestFailed"}`)
+	next(t, ch)
+	if len(*waits) != 1 || p.licence.fails != 1 || p.Limiting() <= 0 || p.Limiting() > 7*time.Second {
+		t.Fatalf("one refusal produced %d timers, %d refusals, wait %v", len(*waits), p.licence.fails, p.Limiting())
+	}
+}
+
+// Retiring an output for a fade must stop its late licence request without blocking the selected track.
+func TestLicenceRetiredOutputDoesNotAsk(t *testing.T) {
+	var asked atomic.Int32
+	ch, p, _ := licensed(t, func(w http.ResponseWriter, r *http.Request) { asked.Add(1) })
+	p.Next()
+	if got := page(p, http.MethodPost, "/license?gen=1", "old"); got != 410 || asked.Load() != 0 {
+		t.Fatalf("replaced output got %d, %d upstream attempts", got, asked.Load())
+	}
+	until(t, ch, func() bool { return p.out != nil })
+	for _, challenge := range []string{"key-one", "key-two"} {
+		if got := page(p, http.MethodPost, "/license?gen=2", challenge); got != 200 {
+			t.Fatalf("current output got %d", got)
+		}
+	}
+	if asked.Load() != 2 {
+		t.Fatalf("distinct valid challenges produced %d upstream requests", asked.Load())
+	}
+}
+
+// Switching songs during identity renewal must cancel the old song's second licence attempt.
+func TestLicenceRenewalSkipsReplacedTrack(t *testing.T) {
+	var asked atomic.Int32
+	ch, p, _ := licensed(t, func(w http.ResponseWriter, r *http.Request) {
+		asked.Add(1)
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	started, release := make(chan struct{}), make(chan struct{})
+	spotify.Renew = func() (spotify.Identity, error) {
+		close(started)
+		<-release
+		return spotify.Identity{Token: "renewed", Expires: time.Now().Add(time.Hour)}, nil
+	}
+	done := make(chan int, 1)
+	go func() { done <- page(p, http.MethodPost, "/license?gen=1", "old") }()
+	<-started
+	p.Next()
+	close(release)
+	if code := <-done; code != 410 || asked.Load() != 1 {
+		t.Fatalf("retired after 401: HTTP %d, %d upstream attempts", code, asked.Load())
+	}
+	until(t, ch, func() bool { return p.out != nil })
 }

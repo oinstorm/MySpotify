@@ -53,8 +53,9 @@ type Web struct {
 	gen  int
 	outs map[int]*webOut
 	// heads are the starts of files fetched ahead of playing (Prefetch).
-	heads []*head
-	cert  certificateCache
+	heads   []*head
+	cert    certificateCache
+	licence licenceGate
 
 	// Cache, if set, keeps the parts of tracks the page asks for.
 	Cache *Cache
@@ -207,11 +208,11 @@ var uriAttr = regexp.MustCompile(`URI="([^"]*)"`)
 
 // Open loads m to play, paused at its start, and returns what plays it.
 func (w *Web) Open(m *spotify.Media) Output {
-	return w.openAudio(m, "load")
+	return w.openAudio(m, "load", &w.licence)
 }
 
-func (w *Web) openAudio(m *spotify.Media, reason string) Output {
-	o := &webOut{w: w, dur: m.Duration, at: time.Now(), reason: reason}
+func (w *Web) openAudio(m *spotify.Media, reason string, gate *licenceGate) Output {
+	o := &webOut{w: w, dur: m.Duration, at: time.Now(), reason: reason, gate: gate}
 	w.mu.Lock()
 	w.gen++
 	o.gen = w.gen
@@ -235,7 +236,11 @@ func (w *Web) openAudio(m *spotify.Media, reason string) Output {
 // OpenVideo loads v to play, paused at its start, and returns what plays
 // it: its master playlist is the track's, its other playlists beside it.
 func (w *Web) OpenVideo(v *spotify.Video) Output {
-	o := &webOut{w: w, dur: v.Duration, at: time.Now(), license: v.License, video: true, reason: "video"}
+	return w.openVideo(v, &w.licence)
+}
+
+func (w *Web) openVideo(v *spotify.Video, gate *licenceGate) Output {
+	o := &webOut{w: w, dur: v.Duration, at: time.Now(), license: v.License, video: true, reason: "video", gate: gate}
 	w.mu.Lock()
 	w.gen++
 	o.gen = w.gen
@@ -468,6 +473,8 @@ func (w *Web) forward(r *http.Request, o *webOut, target string, origin []string
 			return drmReply{status: http.StatusBadRequest, body: []byte(err.Error())}
 		}
 		body = b
+		o.gate.request.Lock()
+		defer o.gate.request.Unlock()
 	}
 	gen, _ := strconv.Atoi(r.URL.Query().Get("gen"))
 	var res *http.Response
@@ -475,9 +482,17 @@ func (w *Web) forward(r *http.Request, o *webOut, target string, origin []string
 	attempts := 0
 	for attempt := 0; ; attempt++ {
 		attempts = attempt + 1
-		id, err := spotify.CurrentIdentity()
+		if !cert {
+			if status := o.blockLicence(r); status != 0 {
+				return drmReply{status: status}
+			}
+		}
+		var id spotify.Identity
+		var err error
 		if attempt > 0 {
 			id, err = spotify.RenewedIdentity()
+		} else {
+			id, err = spotify.CurrentIdentity()
 		}
 		if err != nil {
 			if !cert {
@@ -507,6 +522,9 @@ func (w *Web) forward(r *http.Request, o *webOut, target string, origin []string
 		if !cert {
 			req.Header.Set("Authorization", "Bearer "+id.Token)
 			req.Header.Set("Content-Type", "application/octet-stream")
+			if blocked := o.blockLicence(r); blocked != 0 {
+				return drmReply{status: blocked}
+			}
 		}
 		if res, err = spotify.Client.Do(req); err != nil {
 			if !cert && o != nil {
@@ -516,6 +534,11 @@ func (w *Web) forward(r *http.Request, o *webOut, target string, origin []string
 				return drmReply{status: http.StatusBadGateway, attempt: attempt + 1, cacheReason: certificateTransportError(err)}
 			}
 			return drmReply{status: http.StatusBadGateway, body: []byte(err.Error())}
+		}
+		if !cert && res.StatusCode == http.StatusTooManyRequests {
+			wait := spotify.RetryAfter(res.Header)
+			o.gate.refused(time.Now(), wait)
+			o.noteRefusal(wait)
 		}
 		if cert {
 			out, err = io.ReadAll(io.LimitReader(res.Body, maxCertificateBytes+1))
@@ -569,6 +592,8 @@ func (w *Web) forward(r *http.Request, o *webOut, target string, origin []string
 // webOut is one track in the page, which reports where it is a few times
 // a second: in between, its position moves on with the clock.
 type webOut struct {
+	gate     *licenceGate
+	retired  atomic.Bool
 	w        *Web
 	gen      int
 	reason   string
@@ -599,6 +624,37 @@ type webOut struct {
 	err      string
 	licence  int           // how the licence service last answered
 	wait     time.Duration // how long it asked to wait, with a 429
+	refused  bool
+}
+
+func (o *webOut) blockLicence(r *http.Request) int {
+	status := http.StatusGone
+	reason := "stale"
+	if !o.retired.Load() && r.Context().Err() == nil && o.w.out(o.gen) == o {
+		until := o.gate.deadline()
+		refused := o.licenceRefused()
+		if !time.Now().Before(until) && !refused {
+			return 0
+		}
+		status, reason = http.StatusTooManyRequests, "cooldown"
+		if !refused {
+			o.noteRefusal(time.Until(until))
+		}
+	}
+	log.Printf("player: licence blocked locally page=%d track=%d reason=%s", o.w.id, o.gen, reason)
+	return status
+}
+
+func (o *webOut) noteRefusal(wait time.Duration) {
+	o.mu.Lock()
+	o.refused, o.licence, o.wait = true, http.StatusTooManyRequests, wait
+	o.mu.Unlock()
+}
+
+func (o *webOut) licenceRefused() bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.refused
 }
 
 // went returns where to ask for the file at source: where it led last.
@@ -731,7 +787,9 @@ func (o *webOut) answered(status int, wait time.Duration) {
 		return
 	}
 	o.mu.Lock()
-	o.licence, o.wait = status, wait
+	if !o.refused {
+		o.licence, o.wait = status, wait
+	}
 	o.mu.Unlock()
 }
 
