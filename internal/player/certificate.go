@@ -8,6 +8,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,11 +24,13 @@ type certificateCache struct {
 	mu      sync.Mutex
 	loading chan struct{}
 	target  string
+	origin  []string
 	reply   drmReply
 	expires time.Time
 }
 
-func (w *Web) serveCertificate(rw http.ResponseWriter, r *http.Request) {
+func (w *Web) serveCertificate(rw http.ResponseWriter, r *http.Request, origin []string) {
+	origin = slices.Clone(origin)
 	gen, _ := strconv.Atoi(r.URL.Query().Get("gen"))
 	o := w.out(gen)
 	target := licenseHost + "/application-certificate"
@@ -40,7 +43,7 @@ func (w *Web) serveCertificate(rw http.ResponseWriter, r *http.Request) {
 		}
 		c.mu.Lock()
 		now := time.Now()
-		if c.target == target && now.Before(c.expires) {
+		if c.target == target && slices.Equal(c.origin, origin) && now.Before(c.expires) {
 			reply := c.reply
 			ttl := time.Until(c.expires).Round(time.Second)
 			c.mu.Unlock()
@@ -52,6 +55,8 @@ func (w *Web) serveCertificate(rw http.ResponseWriter, r *http.Request) {
 		switch {
 		case c.target != "" && c.target != target:
 			miss = "target-changed"
+		case c.target == target && !slices.Equal(c.origin, origin):
+			miss = "origin-changed"
 		case c.target == target && !c.expires.IsZero() && !now.Before(c.expires):
 			miss = "expired"
 		}
@@ -67,16 +72,16 @@ func (w *Web) serveCertificate(rw http.ResponseWriter, r *http.Request) {
 		c.loading = make(chan struct{})
 		c.mu.Unlock()
 
-		reply := w.forward(r, o, target)
+		reply := w.forward(r, o, target, origin)
 		c.mu.Lock()
-		c.target, c.reply, c.expires = "", drmReply{}, time.Time{}
+		c.target, c.origin, c.reply, c.expires = "", nil, drmReply{}, time.Time{}
 		cacheDecision := reply.cacheReason
 		if reply.status == http.StatusOK && reply.upstreamStatus == http.StatusOK {
 			now := time.Now()
 			ttl, policy := certificateLifetime(reply.header, now)
 			cacheDecision = policy
 			if ttl > 0 {
-				c.target, c.reply, c.expires = target, reply, now.Add(ttl)
+				c.target, c.origin, c.reply, c.expires = target, origin, reply, now.Add(ttl)
 				cacheDecision = "stored-" + policy
 			}
 		} else if cacheDecision == "" {
@@ -116,7 +121,7 @@ func certificateLifetime(h http.Header, now time.Time) (time.Duration, string) {
 		}
 	}
 	for _, field := range strings.Split(strings.Join(h.Values("Vary"), ","), ",") {
-		if field = strings.TrimSpace(field); field != "" && !strings.EqualFold(field, "Accept-Encoding") {
+		if field = strings.TrimSpace(field); field != "" && !strings.EqualFold(field, "Accept-Encoding") && !strings.EqualFold(field, "Origin") {
 			return 0, "vary-" + strings.ToLower(field)
 		}
 	}

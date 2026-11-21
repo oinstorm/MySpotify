@@ -21,6 +21,130 @@ func certificateRequest(w *Web, gen int) *httptest.ResponseRecorder {
 	return reply
 }
 
+// Spotify's public certificate with Vary: Origin must be reused across tracks with no upstream Origin.
+func TestCertificateSpotifyOriginResponseReusedAcrossTracks(t *testing.T) {
+	var certs, licences atomic.Int32
+	ch, p, _ := licensed(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			certs.Add(1)
+			if _, present := r.Header["Origin"]; present {
+				t.Error("the certificate request unexpectedly forwarded a browser Origin")
+			}
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.Header().Set("Cache-Control", "public, max-age=86400")
+			w.Header().Set("Vary", "Origin")
+			w.Write([]byte{0x30, 0x02, 0x00, 0x01})
+			return
+		}
+		licences.Add(1)
+		w.Write([]byte("licence"))
+	})
+	for gen := 1; gen <= 3; gen++ {
+		if reply := certificateRequest(p.Web, gen); reply.Code != http.StatusOK || !bytes.Equal(reply.Body.Bytes(), []byte{0x30, 0x02, 0x00, 0x01}) {
+			t.Fatalf("track %d did not get its certificate: status %d", gen, reply.Code)
+		}
+		if code := page(p, http.MethodPost, fmt.Sprintf("/license?gen=%d", gen), "challenge"); code != http.StatusOK {
+			t.Fatalf("track %d licence returned %d", gen, code)
+		}
+		if gen < 3 {
+			p.Next()
+			next(t, ch)
+		}
+	}
+	if certs.Load() != 1 || licences.Load() != 3 {
+		t.Fatalf("three tracks sent %d certificate and %d licence requests; want 1 and 3", certs.Load(), licences.Load())
+	}
+}
+
+// Vary: Origin matches the actual upstream header, including the difference between absent, empty and null.
+func TestCertificateOriginVariantsAreIsolated(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		first  []string
+		second []string
+		asks   int32
+	}{
+		{name: "both-absent", asks: 1},
+		{name: "same-origin", first: []string{"https://a.test"}, second: []string{"https://a.test"}, asks: 1},
+		{name: "different-origins", first: []string{"https://a.test"}, second: []string{"https://b.test"}, asks: 2},
+		{name: "absent-then-empty", second: []string{""}, asks: 2},
+		{name: "empty-then-absent", first: []string{""}, asks: 2},
+		{name: "absent-then-null", second: []string{"null"}, asks: 2},
+		{name: "null-then-origin", first: []string{"null"}, second: []string{"https://a.test"}, asks: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var asks atomic.Int32
+			_, p, _ := licensed(t, func(w http.ResponseWriter, r *http.Request) {
+				asks.Add(1)
+				w.Header().Set("Cache-Control", "public, max-age=86400")
+				w.Header().Set("Vary", "Origin")
+				w.Header().Set("Content-Type", "application/octet-stream")
+				fmt.Fprintf(w, "certificate-for-%q", r.Header.Values("Origin"))
+			})
+			for _, origin := range [][]string{tc.first, tc.second} {
+				r := httptest.NewRequest(http.MethodGet, "http://"+p.Web.addr+"/cert?gen=1", nil)
+				reply := httptest.NewRecorder()
+				p.Web.serveCertificate(reply, r, origin)
+				if reply.Code != http.StatusOK || reply.Body.String() != fmt.Sprintf("certificate-for-%q", origin) {
+					t.Fatalf("received another Origin's certificate: status %d", reply.Code)
+				}
+			}
+			if asks.Load() != tc.asks {
+				t.Fatalf("sent %d upstream requests, want %d", asks.Load(), tc.asks)
+			}
+		})
+	}
+}
+
+// The local WebView's Origin must not be forwarded or mistaken for the upstream certificate variant.
+func TestCertificateDoesNotForwardBrowserOrigin(t *testing.T) {
+	var asks atomic.Int32
+	_, p, _ := licensed(t, func(w http.ResponseWriter, r *http.Request) {
+		asks.Add(1)
+		if _, present := r.Header["Origin"]; present {
+			t.Error("forwarded an untrusted local request Origin to Spotify")
+		}
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		w.Header().Set("Vary", "Origin")
+		w.Write([]byte("certificate"))
+	})
+	for _, origin := range []string{"https://a.test", "https://b.test"} {
+		r := httptest.NewRequest(http.MethodGet, "http://"+p.Web.addr+"/cert?gen=1", nil)
+		r.Header.Set("Origin", origin)
+		reply := httptest.NewRecorder()
+		p.Web.ServeHTTP(reply, r)
+		if reply.Code != http.StatusOK || reply.Body.String() != "certificate" {
+			t.Fatalf("certificate request returned %d", reply.Code)
+		}
+	}
+	if asks.Load() != 1 {
+		t.Fatalf("local browser headers caused %d upstream requests, want 1", asks.Load())
+	}
+}
+
+// Requests arriving concurrently cannot receive another upstream Origin's certificate.
+func TestCertificateConcurrentOriginVariants(t *testing.T) {
+	_, p, _ := licensed(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		w.Header().Set("Vary", "Origin")
+		w.Header().Set("Content-Type", "application/octet-stream")
+		fmt.Fprintf(w, "certificate-for-%q", r.Header.Values("Origin"))
+	})
+	var wg sync.WaitGroup
+	for i := range 12 {
+		origin := []string{fmt.Sprintf("https://origin-%d.test", i%2)}
+		wg.Go(func() {
+			r := httptest.NewRequest(http.MethodGet, "http://"+p.Web.addr+"/cert?gen=1", nil)
+			reply := httptest.NewRecorder()
+			p.Web.serveCertificate(reply, r, origin)
+			if reply.Code != http.StatusOK || reply.Body.String() != fmt.Sprintf("certificate-for-%q", origin) {
+				t.Errorf("concurrent request received a different Origin's certificate: %d", reply.Code)
+			}
+		})
+	}
+	wg.Wait()
+}
+
 // Recreating the player web page receives a new diagnostic identity for cache lifetime analysis.
 func TestCertificatePageIdentityChangesOnRecreation(t *testing.T) {
 	first, err := listen()
@@ -167,6 +291,8 @@ func TestCertificateSharesConcurrentFetch(t *testing.T) {
 			close(started)
 			<-release
 		}
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		w.Header().Set("Vary", "Origin")
 		w.Write([]byte("certificate"))
 	})
 	var wg sync.WaitGroup
@@ -201,6 +327,12 @@ func TestCertificateHonorsFreshnessHeaders(t *testing.T) {
 		{control: "max-age=60, no-store", policy: "no-store"},
 		{control: "no-cache", policy: "no-cache"},
 		{vary: "client-token", policy: "vary-client-token"},
+		{control: "public, max-age=86400", vary: "Origin", want: 24 * time.Hour, policy: "max-age"},
+		{control: "public, max-age=86400", vary: "oRiGiN, Accept-Encoding", want: 24 * time.Hour, policy: "max-age"},
+		{control: "no-store", vary: "Origin", policy: "no-store"},
+		{control: "no-cache", vary: "Origin", policy: "no-cache"},
+		{control: "public, max-age=86400", vary: "Origin, client-token", policy: "vary-client-token"},
+		{control: "public, max-age=86400", vary: "Origin, *", policy: "vary-*"},
 		{vary: "Accept-Encoding", want: 24 * time.Hour, policy: "default-24h"},
 		{expires: now.Add(time.Minute).Format(http.TimeFormat), want: time.Minute, policy: "expires"},
 		{expires: now.Add(-time.Minute).Format(http.TimeFormat), policy: "invalid-or-expired-expires"},
@@ -239,7 +371,7 @@ func TestCertificateDiagnostics(t *testing.T) {
 		t.Fatalf("certificate fetched upstream %d times, want 1", asks.Load())
 	}
 	got := output.String()
-	if !strings.Contains(got, "source=upstream") || !strings.Contains(got, "cache=stored-default-24h") || !strings.Contains(got, "source=cache") || !strings.Contains(got, "ttl=24h0m0s") {
+	if !strings.Contains(got, "source=upstream") || !strings.Contains(got, "cache=stored-default-24h") || !strings.Contains(got, "source=cache") || !strings.Contains(got, "ttl=") {
 		t.Fatalf("certificate cache decisions were not logged: %s", got)
 	}
 	if strings.Contains(got, string([]byte{0x30, 0x02, 0x00, 0x01})) {

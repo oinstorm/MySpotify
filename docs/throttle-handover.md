@@ -1,5 +1,13 @@
 # Spotify 限流优化交接文档
 
+## 2026-11-21：修复真实响应中的 `Vary: Origin` 缓存零命中
+
+- 实机诊断确认：同一 `page=1` 的证书响应均为 `Cache-Control: public, max-age=86400` 与 `Vary: Origin`，但旧版将除 `Accept-Encoding` 外的所有 Vary 都判为不可缓存，产生 `cache=vary-origin`。这属于本地兼容性遗漏，不是 Spotify 禁止缓存。
+- 缓存现在同时匹配上游目标和实际上游 Origin 值；未设置、显式空值、`null` 和不同 Origin 均隔离。当前生产转发不带 Origin，不能用本地 WebView 的 Origin 代替它，也不转发不受信任的入站 Origin。
+- 仍仅在内存保存每个 Web 实例的一份证书；尊重 `no-store`、`no-cache`、有效期及不支持的 Vary，`Vary: *` 仍不可复用。不改变 `/license`、播放队列、退避、界面或 Hls.js。
+- 修复前先以真实响应头模拟三首换曲复现失败：上游收到三次证书和三次歌曲授权。修复后要求一次证书和三次独立授权，并覆盖 Origin 隔离、并发隔离、Origin 缺失与空值差异，以及页面重建。
+- 实机验收目标是首次 `/cert` 记录 `cache=stored-max-age`，随后同一页自然换曲出现 `source=cache`，不再每首 `source=upstream`。这只验证请求减少，不保证 Spotify 不再对歌曲授权返回 429。
+
 ## 2026-11-20：证书缓存与请求统计（仅第 1 步）
 
 - 每个本地播放页只在内存缓存当前上游的应用证书，最多 24 小时，遵守更短的上游有效期及禁止缓存指令。不会缓存失败、空、截断、超大或明显不是证书的响应；同时到达的可缓存请求共用一次成功获取。

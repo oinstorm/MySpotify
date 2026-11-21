@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -336,11 +337,12 @@ func (w *Web) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 		if o.license != "" {
 			target = licenseOrigin + o.license
 		}
-		reply := w.forward(r, o, target)
+		reply := w.forward(r, o, target, nil)
 		reply.header = nil
 		reply.write(rw)
 	case p == "/cert" && r.Method == http.MethodGet:
-		w.serveCertificate(rw, r)
+		// The upstream request omits Origin, independently of the local page's headers.
+		w.serveCertificate(rw, r, nil)
 
 	case p == "/event" && r.Method == http.MethodPost:
 		var e struct {
@@ -457,7 +459,7 @@ func drmLoadReason(o *webOut) string {
 }
 
 // forward sends a DRM request, renewing the identity once after a 401.
-func (w *Web) forward(r *http.Request, o *webOut, target string) drmReply {
+func (w *Web) forward(r *http.Request, o *webOut, target string, origin []string) drmReply {
 	cert := r.Method == http.MethodGet
 	var body []byte
 	if !cert {
@@ -499,6 +501,9 @@ func (w *Web) forward(r *http.Request, o *webOut, target string) drmReply {
 		req.Header.Set("client-token", id.ClientToken)
 		req.Header.Set("User-Agent", spotify.UserAgent)
 		req.Header.Set("Referer", "https://open.spotify.com/")
+		if cert && len(origin) > 0 {
+			req.Header["Origin"] = slices.Clone(origin)
+		}
 		if !cert {
 			req.Header.Set("Authorization", "Bearer "+id.Token)
 			req.Header.Set("Content-Type", "application/octet-stream")
