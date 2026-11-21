@@ -525,6 +525,7 @@ func (w *Web) forward(r *http.Request, o *webOut, target string, origin []string
 			if blocked := o.blockLicence(r); blocked != 0 {
 				return drmReply{status: blocked}
 			}
+			o.gate.attempted(time.Now())
 		}
 		if res, err = spotify.Client.Do(req); err != nil {
 			if !cert && o != nil {
@@ -537,7 +538,7 @@ func (w *Web) forward(r *http.Request, o *webOut, target string, origin []string
 		}
 		if !cert && res.StatusCode == http.StatusTooManyRequests {
 			wait := spotify.RetryAfter(res.Header)
-			o.gate.refused(time.Now(), wait)
+			o.gate.refused(time.Now(), wait, wait > 0)
 			o.noteRefusal(wait)
 		}
 		if cert {
@@ -625,12 +626,32 @@ type webOut struct {
 	licence  int           // how the licence service last answered
 	wait     time.Duration // how long it asked to wait, with a 429
 	refused  bool
+	retried  int // times the page was asked to load this same track again
+}
+
+// Retry asks the page to load the same track again, its licence kept: a
+// media or network failure then costs no new licence.
+func (o *webOut) Retry() bool {
+	if o.w.out(o.gen) != o || o.retired.Load() {
+		return false
+	}
+	o.mu.Lock()
+	if o.retried >= 2 {
+		o.mu.Unlock()
+		return false
+	}
+	o.retried++
+	o.err = ""
+	o.running = false
+	o.mu.Unlock()
+	o.w.send(fmt.Sprintf("vinyl.retry(%d)", o.gen))
+	return true
 }
 
 func (o *webOut) blockLicence(r *http.Request) int {
 	status := http.StatusGone
 	reason := "stale"
-	if !o.retired.Load() && r.Context().Err() == nil && o.w.out(o.gen) == o {
+	if o.gate != nil && !o.retired.Load() && r.Context().Err() == nil && o.w.out(o.gen) == o {
 		until := o.gate.deadline()
 		refused := o.licenceRefused()
 		if !time.Now().Before(until) && !refused {

@@ -1,6 +1,7 @@
 package player
 
 import (
+	"log"
 	"sync"
 	"time"
 )
@@ -11,12 +12,13 @@ import (
 // librespot found out with the audio keys (librespot-org/librespot#1649).
 type licenceGate struct {
 	mu       sync.Mutex
-	request  sync.Mutex // one upstream licence exchange at a time; UI never waits on this mutex
-	until    time.Time  // no licence is asked before
-	fails    int        // refusals in a row, which lengthen the wait
-	last     time.Time  // last refusal or newly authorized track that played through
-	good     int        // consecutive newly authorized tracks that played through
-	lastGood int        // player generation last counted, so repeat-one counts once
+	request  sync.Mutex  // one upstream licence exchange at a time; UI never waits on this mutex
+	until    time.Time   // no licence is asked before
+	fails    int         // refusals in a row, which lengthen the wait
+	last     time.Time   // last refusal or newly authorized track that played through
+	good     int         // consecutive newly authorized tracks that played through
+	lastGood int         // player generation last counted, so repeat-one counts once
+	asked    []time.Time // upstream licence attempts, for the rate a refusal reports
 }
 
 // gateQuiet is how long without a refusal the wait goes back to its first
@@ -29,10 +31,12 @@ const (
 )
 
 // refused notes a refusal, and returns until when no licence is to be asked:
-// as long as Spotify said, or longer each time it did not say.
-func (g *licenceGate) refused(now time.Time, wait time.Duration) time.Time {
+// as long as Spotify said, or longer each time it did not say. fromServer
+// says whether Spotify asked that wait itself.
+func (g *licenceGate) refused(now time.Time, wait time.Duration, fromServer bool) time.Time {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	five, fifteen := g.recentLocked(now)
 	if !g.last.IsZero() && now.Sub(g.last) >= gateQuiet {
 		g.fails = 0
 	}
@@ -45,7 +49,38 @@ func (g *licenceGate) refused(now time.Time, wait time.Duration) time.Time {
 	if until := now.Add(wait); until.After(g.until) {
 		g.until = until
 	}
+	source := "local-backoff"
+	if fromServer {
+		source = "retry-after"
+	}
+	log.Printf("player: licence refused: requests in last 5m=%d 15m=%d wait=%v from=%s", five, fifteen, wait, source)
 	return g.until
+}
+
+// attempted notes a licence asked of Spotify, to report how many came before a refusal.
+func (g *licenceGate) attempted(now time.Time) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.asked = append(g.asked, now)
+	cut := now.Add(-15 * time.Minute)
+	i := 0
+	for i < len(g.asked) && g.asked[i].Before(cut) {
+		i++
+	}
+	g.asked = g.asked[i:]
+}
+
+func (g *licenceGate) recentLocked(now time.Time) (five, fifteen int) {
+	for _, at := range g.asked {
+		since := now.Sub(at)
+		if since <= 15*time.Minute {
+			fifteen++
+		}
+		if since <= 5*time.Minute {
+			five++
+		}
+	}
+	return five, fifteen
 }
 
 func (g *licenceGate) manual() bool {

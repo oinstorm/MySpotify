@@ -11,7 +11,7 @@ import (
 func TestGateWaitsAsAsked(t *testing.T) {
 	var g licenceGate
 	now := time.Now()
-	until := g.refused(now, 7*time.Second)
+	until := g.refused(now, 7*time.Second, true)
 	if got := until.Sub(now); got != 7*time.Second {
 		t.Fatalf("waits %v, want 7s", got)
 	}
@@ -33,7 +33,7 @@ func TestGateBacksOffFurther(t *testing.T) {
 		8 * time.Minute, 8 * time.Minute, 8 * time.Minute, 8 * time.Minute,
 	}
 	for i, w := range want {
-		until := g.refused(now, 0)
+		until := g.refused(now, 0, false)
 		if got := until.Sub(now); got != w {
 			t.Fatalf("refusal %d waits %v, want %v", i+1, got, w)
 		}
@@ -46,9 +46,9 @@ func TestGateBacksOffFurther(t *testing.T) {
 func TestGateForgetsAfterAQuietSpell(t *testing.T) {
 	var g licenceGate
 	now := time.Now()
-	g.refused(now, 0)
+	g.refused(now, 0, false)
 	now = now.Add(gateQuiet)
-	until := g.refused(now, 0)
+	until := g.refused(now, 0, false)
 	if got := until.Sub(now); got != 30*time.Second {
 		t.Fatalf("after a quiet spell waits %v, want 30s", got)
 	}
@@ -58,11 +58,11 @@ func TestGateForgetsAfterAQuietSpell(t *testing.T) {
 func TestGateKeepsBackoffAfterOneTrack(t *testing.T) {
 	var g licenceGate
 	now := time.Unix(1000, 0)
-	now = g.refused(now, 0)
+	now = g.refused(now, 0, false)
 	for range 4 {
 		g.completed(now, 1)
 	}
-	if got := g.refused(now, 0).Sub(now); got != time.Minute {
+	if got := g.refused(now, 0, false).Sub(now); got != time.Minute {
 		t.Fatalf("after the next refusal waits %v, want 1m", got)
 	}
 }
@@ -71,13 +71,13 @@ func TestGateKeepsBackoffAfterOneTrack(t *testing.T) {
 func TestGateRecoversGradually(t *testing.T) {
 	var g licenceGate
 	now := time.Unix(1000, 0)
-	now = g.refused(now, 0)
-	now = g.refused(now, 0)
+	now = g.refused(now, 0, false)
+	now = g.refused(now, 0, false)
 	for gen := 1; gen <= 3; gen++ {
 		now = now.Add(4 * time.Minute)
 		g.completed(now, gen)
 	}
-	if got := g.refused(now, 0).Sub(now); got != time.Minute {
+	if got := g.refused(now, 0, false).Sub(now); got != time.Minute {
 		t.Fatalf("after playing waits %v, want 1m", got)
 	}
 }

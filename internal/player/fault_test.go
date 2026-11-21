@@ -1,6 +1,8 @@
 package player
 
 import (
+	"bytes"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -193,14 +195,84 @@ func TestRefusedLicenceStops(t *testing.T) {
 	}
 }
 
-// A track the page gave up on, its licence granted, goes on to the next.
+// A track the page gave up on, its licence granted, is loaded again in the
+// same output first; only after that goes on to the next.
 func TestFailedTrackSkips(t *testing.T) {
+	var asked atomic.Int32
+	ch, p, _ := licensed(t, func(w http.ResponseWriter, r *http.Request) {
+		asked.Add(1)
+		w.Write([]byte("licence"))
+	})
+	if code := page(p, http.MethodPost, "/license?gen=1", "challenge"); code != http.StatusOK {
+		t.Fatalf("licence got %d", code)
+	}
+	for i := range 3 {
+		page(p, http.MethodPost, "/event", `{"gen":1,"type":"error","msg":"media 3"}`)
+		next(t, ch)
+		if i < 2 {
+			if p.Current().ID != "1" || p.Loading() {
+				t.Fatalf("retry %d: track %s, loading %v", i+1, p.Current().ID, p.Loading())
+			}
+			continue
+		}
+		if !p.Loading() || p.Current().ID != "2" {
+			t.Fatalf("after %d retries: loading %v, track %s; want track 2", i+1, p.Loading(), p.Current().ID)
+		}
+	}
+	if asked.Load() != 1 {
+		t.Fatalf("retrying the same track asked for %d licences, want the one it had", asked.Load())
+	}
+}
+
+// Each licence request says why it was made, so a log run tells a manual pick from an automatic skip.
+func TestLicenceRequestsSayWhy(t *testing.T) {
+	var output bytes.Buffer
+	oldLog := log.Writer()
+	log.SetOutput(&output)
+	t.Cleanup(func() { log.SetOutput(oldLog) })
 	ch, p, _ := licensed(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("licence"))
 	})
+	if code := page(p, http.MethodPost, "/license?gen="+strconv.Itoa(p.Web.gen), "pick"); code != http.StatusOK {
+		t.Fatalf("licence got %d", code)
+	}
+	if got := output.String(); !strings.Contains(got, "reason=choose") {
+		t.Fatalf("a picked track did not say so: %s", got)
+	}
+	// The page gives up on the track three times: two reloads of it, then on.
+	for range 3 {
+		gen := strconv.Itoa(p.Web.gen)
+		page(p, http.MethodPost, "/event", `{"gen":`+gen+`,"type":"error","msg":"media 3"}`)
+		next(t, ch)
+		if p.Current().ID == "1" {
+			page(p, http.MethodPost, "/license?gen="+gen, "still")
+		}
+	}
+	if p.Current().ID != "2" {
+		t.Fatalf("did not move on: track %s", p.Current().ID)
+	}
+	until(t, ch, func() bool { return p.out != nil && !p.Loading() })
+	if code := page(p, http.MethodPost, "/license?gen="+strconv.Itoa(p.Web.gen), "after"); code != http.StatusOK {
+		t.Fatalf("licence after skipping got %d", code)
+	}
+	if got := output.String(); !strings.Contains(got, "reason=after-failed") {
+		t.Fatalf("skipping after failures did not say so: %s", got)
+	}
+}
+
+// A refusal log counts the licence requests before it, to tell a busy window from a quiet one.
+func TestRefusalLogsTheRate(t *testing.T) {
+	var output bytes.Buffer
+	oldLog := log.Writer()
+	log.SetOutput(&output)
+	t.Cleanup(func() { log.SetOutput(oldLog) })
+	ch, p, _ := licensed(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "7")
+		w.WriteHeader(http.StatusTooManyRequests)
+	})
 	fails(t, ch, p, "1")
-	if !p.Loading() || p.Current().ID != "2" {
-		t.Fatalf("loading %v, track %s; want track 2 loading", p.Loading(), p.Current().ID)
+	if got := output.String(); !strings.Contains(got, "requests in last 5m=1 15m=1") || !strings.Contains(got, "from=retry-after") {
+		t.Fatalf("refusal did not report its rate or where the wait came from: %s", got)
 	}
 }
 

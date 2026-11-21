@@ -144,7 +144,7 @@ window.vinyl = {
     });
     // tries counts the recoveries, two at most; want is whether to play;
     // asked is how many times Vinyl had asked to play or pause.
-    const t = { gen, a, hls, seek: null, tries: 0, want: false, asked: 0, endSeq: 0, ending: false, lastTime: 0, still: 0, heard: false };
+    const t = { gen, a, hls, seek: null, tries: 0, want: false, asked: 0, endSeq: 0, ending: false, lastTime: 0, still: 0, heard: false, file, src: '' };
     const finish = (reason) => {
       if (cur !== t || t.ending) return;
       t.ending = true;
@@ -228,6 +228,7 @@ window.vinyl = {
       if (file && Number.isFinite(a.duration)) send(gen, 'duration', a.duration);
     });
     const src = '/m/' + gen + (file ? '/0' : '/track.m3u8');
+    t.src = src;
     hls.loadSource(src);
     hls.attachMedia(a);
     cur = t;
@@ -257,6 +258,24 @@ window.vinyl = {
     cur.heard = false;
     clearTimeout(cur.endTimer);
     if (cur.a.readyState >= 1) cur.a.currentTime = t; else cur.seek = t;
+  },
+  // retry loads the same track again in this page, its key session and so its
+  // licence kept: a media or network failure costs no licence at Spotify.
+  retry(gen) {
+    if (!cur || cur.gen !== gen) return;
+    const t = cur;
+    t.tries = 0;
+    t.ending = false;
+    t.still = 0;
+    t.heard = false;
+    clearTimeout(t.endTimer);
+    if (t.file) {
+      t.a.src = t.src;
+      t.a.load();
+    } else {
+      t.hls.loadSource(t.src);
+    }
+    if (t.want) t.a.play().catch(() => {});
   },
   volume(v) {
     volume = Math.max(0, Math.min(1, v));

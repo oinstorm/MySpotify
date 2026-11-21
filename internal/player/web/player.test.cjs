@@ -13,7 +13,7 @@ class Hls {
   static ErrorTypes = {};
   constructor(config) { this.config = config; this.starts = []; instances.push(this); }
   on() {}
-  loadSource() {}
+  loadSource(s) { (this.sources ||= []).push(s); }
   attachMedia(audio) { this.audio = audio; }
   stopLoad() { this.stopped = true; }
   startLoad(position) { this.starts.push(position); this.stopped = false; }
@@ -121,6 +121,20 @@ assert.equal(reported().length, 4);
 assert.equal(timers.size, 0);
 session.handlers.nexttrack();
 assert.equal(events.filter(event => event.type === 'system-next').length, 1);
+
+// A media failure is loaded again in the same page, its licence kept: no new
+// player, no new key session, and the source is asked for again.
+player.load(8);
+player.play(8);
+const retryHls = instances.at(-1);
+const beforeRetry = instances.length;
+player.retry(8);
+assert.equal(instances.length, beforeRetry);
+assert.deepEqual(retryHls.sources, ['/m/8/track.m3u8', '/m/8/track.m3u8']);
+player.unload(8);
+// A retry for a page that is gone does nothing.
+player.retry(8);
+assert.equal(instances.length, beforeRetry);
 
 async function checkEndings() {
   // A fully buffered tail that stops advancing used to wait forever for ended.

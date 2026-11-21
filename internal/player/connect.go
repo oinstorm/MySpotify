@@ -110,7 +110,7 @@ func (p *Player) ApplyConnect(track spotify.Track, position time.Duration, pause
 	p.endRadio()
 	p.queue = []spotify.Track{track}
 	p.order = []int{0}
-	p.loadSkipping(0, 0, !paused, max(0, position))
+	p.loadFor(0, 0, !paused, max(0, position), "connect")
 }
 
 func (p *Player) MirrorConnect(track spotify.Track, position time.Duration, playing bool) {

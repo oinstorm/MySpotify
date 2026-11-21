@@ -271,17 +271,36 @@ func (p *Player) failed(licence int, wait time.Duration) {
 		p.playing = false
 		p.sync()
 	default:
-		// The page tried again, and could not: on to the next.
+		// The page gave up on the media, its licence still good: ask that
+		// same output to load it again, rather than a new load that asks
+		// Spotify for another licence.
+		if r, ok := p.out.(interface{ Retry() bool }); ok && !p.showsVideo && r.Retry() {
+			p.err = ""
+			log.Printf("player: track %d: %s, loading it again", p.gen, faultMsg(p.out))
+			p.sync()
+			return
+		}
 		p.err = "这首歌暂时无法播放"
 		p.skip(p.at, p.skipped)
 	}
+}
+
+// faultMsg is why the output could not play, for the log; "" if it says nothing.
+func faultMsg(out Output) string {
+	if f, ok := out.(interface {
+		Fault() (string, int, time.Duration)
+	}); ok {
+		msg, _, _ := f.Fault()
+		return msg
+	}
+	return ""
 }
 
 // throttled waits until the licence gate lets go, as long as Spotify asked
 // or longer each time it did not say, then loads the track again from where
 // it was. Nothing else may ask for a licence meanwhile.
 func (p *Player) throttled(wait time.Duration) {
-	p.holdLicence(p.licence.refused(time.Now(), wait))
+	p.holdLicence(p.licence.refused(time.Now(), wait, wait > 0))
 }
 
 func (p *Player) holdLicence(until time.Time) {
@@ -357,7 +376,7 @@ func (p *Player) skip(at, skipped int) {
 		p.sync()
 		return
 	}
-	p.loadSkipping((at+1)%len(p.order), skipped+1, p.playing, 0)
+	p.loadFor((at+1)%len(p.order), skipped+1, p.playing, 0, "after-failed")
 }
 
 // PlayQueue replaces the queue with tracks and plays the one at start.
@@ -377,10 +396,10 @@ func (p *Player) PlayQueue(tracks []spotify.Track, start int) {
 	}
 	if p.shuffle {
 		p.shuffleOrder(start)
-		p.load(0)
+		p.loadAs(0, "choose")
 		return
 	}
-	p.load(start)
+	p.loadAs(start, "choose")
 }
 
 // PlayRadio plays tracks in their order, then goes on with those feed
@@ -467,7 +486,7 @@ func (p *Player) refill() {
 		case !p.awaiting:
 		case p.at+1 < len(p.order):
 			p.awaiting = false
-			p.load(p.at + 1)
+			p.loadAs(p.at+1, "radio-feed")
 		default:
 			// The radio has nothing more: it stops at its end.
 			p.awaiting, p.playing = false, false
@@ -709,7 +728,7 @@ func (p *Player) Jump(i int) {
 	}
 	for k, v := range p.order {
 		if v == i {
-			p.load(k)
+			p.loadAs(k, "choose")
 			return
 		}
 	}
@@ -987,7 +1006,11 @@ func (p *Player) stop() {
 
 // load plays the track at order[at], skipping those that cannot play.
 func (p *Player) load(at int) {
-	p.loadSkipping(at, 0, true, 0)
+	p.loadAs(at, "load")
+}
+
+func (p *Player) loadAs(at int, reason string) {
+	p.loadFor(at, 0, true, 0, reason)
 }
 
 // loadSkipping loads the track at order[at], to play or not, from from,
